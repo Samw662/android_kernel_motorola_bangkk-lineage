@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 5
 PATCHLEVEL = 4
-SUBLEVEL = 302
+SUBLEVEL = 295
 EXTRAVERSION =
 NAME = Kleptomaniac Octopus
-
-# indicate that change "Kbuild: Support nested composite objects" is
-# present in the kernel so that out-of-tree modules can act upon it
-export KERNEL_SUPPORTS_NESTED_COMPOSITES := y
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
@@ -412,14 +408,10 @@ else
 HOSTCC	= gcc
 HOSTCXX	= g++
 endif
-
-KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
-			 -O2 -fomit-frame-pointer -std=gnu89
-KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
-KBUILD_USERLDFLAGS := $(USERLDFLAGS)
-
-KBUILD_HOSTCFLAGS   := $(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) $(HOSTCFLAGS)
-KBUILD_HOSTCXXFLAGS := -Wall -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
+KBUILD_HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 \
+		-fomit-frame-pointer -std=gnu89 $(HOST_LFS_CFLAGS) \
+		$(HOSTCFLAGS)
+KBUILD_HOSTCXXFLAGS := -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
 KBUILD_HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS) $(HOSTLDFLAGS)
 KBUILD_HOSTLDLIBS   := $(HOST_LFS_LIBS) $(HOSTLDLIBS)
 
@@ -447,7 +439,6 @@ OBJSIZE		= $(CROSS_COMPILE)size
 STRIP		= $(CROSS_COMPILE)strip
 endif
 PAHOLE		= pahole
-RESOLVE_BTFIDS	= $(objtree)/tools/bpf/resolve_btfids/resolve_btfids
 LEX		= flex
 YACC		= bison
 AWK		= awk
@@ -510,11 +501,10 @@ GCC_PLUGINS_CFLAGS :=
 CLANG_FLAGS :=
 
 export ARCH SRCARCH CONFIG_SHELL BASH HOSTCC KBUILD_HOSTCFLAGS CROSS_COMPILE LD CC
-export CPP AR NM STRIP OBJCOPY OBJDUMP OBJSIZE READELF PAHOLE RESOLVE_BTFIDS LEX YACC AWK INSTALLKERNEL
+export CPP AR NM STRIP OBJCOPY OBJDUMP OBJSIZE READELF PAHOLE LEX YACC AWK INSTALLKERNEL
 export PERL PYTHON PYTHON3 CHECK CHECKFLAGS MAKE UTS_MACHINE HOSTCXX
 export KGZIP KBZIP2 KLZOP LZMA LZ4 XZ
 export KBUILD_HOSTCXXFLAGS KBUILD_HOSTLDFLAGS KBUILD_HOSTLDLIBS LDFLAGS_MODULE
-export KBUILD_USERCFLAGS KBUILD_USERLDFLAGS
 
 export KBUILD_CPPFLAGS NOSTDINC_FLAGS LINUXINCLUDE OBJCOPYFLAGS KBUILD_LDFLAGS
 export KBUILD_CFLAGS CFLAGS_KERNEL CFLAGS_MODULE
@@ -564,48 +554,30 @@ ifdef building_out_of_srctree
 	{ echo "# this is build directory, ignore it"; echo "*"; } > .gitignore
 endif
 
+ifneq ($(shell $(CC) --version 2>&1 | head -n 1 | grep clang),)
+ifneq ($(CROSS_COMPILE),)
+CLANG_FLAGS	+= --target=$(notdir $(CROSS_COMPILE:%-=%))
+GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
+CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
+GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
+endif
+ifneq ($(GCC_TOOLCHAIN),)
+CLANG_FLAGS	+= --gcc-toolchain=$(GCC_TOOLCHAIN)
+endif
+ifneq ($(LLVM_IAS),1)
+CLANG_FLAGS	+= -no-integrated-as
+endif
+CLANG_FLAGS	+= -Werror=unknown-warning-option
+KBUILD_CFLAGS	+= $(CLANG_FLAGS)
+KBUILD_AFLAGS	+= $(CLANG_FLAGS)
+export CLANG_FLAGS
+endif
+
 # The expansion should be delayed until arch/$(SRCARCH)/Makefile is included.
 # Some architectures define CROSS_COMPILE in arch/$(SRCARCH)/Makefile.
 # CC_VERSION_TEXT is referenced from Kconfig (so it needs export),
 # and from include/config/auto.conf.cmd to detect the compiler upgrade.
-CC_VERSION_TEXT = $(shell $(CC) --version 2>/dev/null | head -n 1 | sed 's/\#//g')
-
-ifneq ($(findstring clang,$(CC_VERSION_TEXT)),)
-# Individual arch/{arch}/Makefiles should use -EL/-EB to set intended
-# endianness and -m32/-m64 to set word size based on Kconfigs instead of
-# relying on the target triple.
-CLANG_TARGET_FLAGS_arm		:= arm-linux-gnueabi
-CLANG_TARGET_FLAGS_arm64	:= aarch64-linux-gnu
-CLANG_TARGET_FLAGS_hexagon	:= hexagon-linux-musl
-CLANG_TARGET_FLAGS_m68k		:= m68k-linux-gnu
-CLANG_TARGET_FLAGS_mips		:= mipsel-linux-gnu
-CLANG_TARGET_FLAGS_powerpc	:= powerpc64le-linux-gnu
-CLANG_TARGET_FLAGS_riscv	:= riscv64-linux-gnu
-CLANG_TARGET_FLAGS_s390		:= s390x-linux-gnu
-CLANG_TARGET_FLAGS_x86		:= x86_64-linux-gnu
-CLANG_TARGET_FLAGS		:= $(CLANG_TARGET_FLAGS_$(SRCARCH))
-
-ifeq ($(CROSS_COMPILE),)
-ifeq ($(CLANG_TARGET_FLAGS),)
-$(error Specify CROSS_COMPILE or add '--target=' option to Makefile)
-else
-CLANG_FLAGS	+= --target=$(CLANG_TARGET_FLAGS)
-endif # CLANG_TARGET_FLAGS
-else
-CLANG_FLAGS	+= --target=$(notdir $(CROSS_COMPILE:%-=%))
-endif # CROSS_COMPILE
-
-ifeq ($(LLVM_IAS),0)
-CLANG_FLAGS	+= -fno-integrated-as
-GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
-CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
-else
-CLANG_FLAGS += -fintegrated-as
-endif
-CLANG_FLAGS	+= -Werror=unknown-warning-option
-KBUILD_CPPFLAGS	+= $(CLANG_FLAGS)
-export CLANG_FLAGS
-endif
+CC_VERSION_TEXT = $(shell $(CC) --version 2>/dev/null | head -n 1)
 
 ifdef config-build
 # ===========================================================================
@@ -670,7 +642,7 @@ endif
 ifeq ($(KBUILD_EXTMOD),)
 # Objects we will link into vmlinux / subdirs we need to visit
 init-y		:= init/
-drivers-y	:= drivers/ sound/ techpack/
+drivers-y	:= drivers/ sound/
 drivers-$(CONFIG_SAMPLES) += samples/
 net-y		:= net/
 libs-y		:= lib/
@@ -702,16 +674,6 @@ RETPOLINE_CFLAGS := $(call cc-option,$(RETPOLINE_CFLAGS_GCC),$(call cc-option,$(
 RETPOLINE_VDSO_CFLAGS := $(call cc-option,$(RETPOLINE_VDSO_CFLAGS_GCC),$(call cc-option,$(RETPOLINE_VDSO_CFLAGS_CLANG)))
 export RETPOLINE_CFLAGS
 export RETPOLINE_VDSO_CFLAGS
-
-# Make toolchain changes before including arch/$(SRCARCH)/Makefile to ensure
-# ar/cc/ld-* macros return correct values.
-ifdef CONFIG_LTO_CLANG
-# LTO produces LLVM IR instead of object files. Use llvm-ar and llvm-nm, so we
-# can process these.
-AR		:= llvm-ar
-LLVM_NM		:= llvm-nm
-export LLVM_NM
-endif
 
 include arch/$(SRCARCH)/Makefile
 
@@ -771,10 +733,6 @@ else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 endif
 
-ifdef CONFIG_CC_WERROR
-KBUILD_CFLAGS  += -Werror
-endif
-
 # Tell gcc to never replace conditional load with a non-conditional one
 KBUILD_CFLAGS	+= $(call cc-option,--param=allow-store-data-races=0)
 KBUILD_CFLAGS	+= $(call cc-option,-fno-allow-store-data-races)
@@ -808,7 +766,10 @@ KBUILD_CFLAGS += -Wno-format-invalid-specifier
 KBUILD_CFLAGS += -Wno-gnu
 # Quiet clang warning: comparison of unsigned expression < 0 is always false
 KBUILD_CFLAGS += -Wno-tautological-compare
-KBUILD_CFLAGS += $(call cc-disable-warning, undefined-optimized)
+# CLANG uses a _MergedGlobals as optimization, but this breaks modpost, as the
+# source of a reference will be _MergedGlobals and not on of the whitelisted names.
+# See modpost pattern 2
+KBUILD_CFLAGS += -mno-global-merge
 
 # Clang may emit a warning when a const variable, such as the dummy variables
 # in typecheck(), or const member of an aggregate type are not initialized,
@@ -851,18 +812,9 @@ KBUILD_CFLAGS	+= -fomit-frame-pointer
 endif
 endif
 
-# Initialize all stack variables with a 0xAA pattern.
-ifdef CONFIG_INIT_STACK_ALL_PATTERN
+# Initialize all stack variables with a pattern, if desired.
+ifdef CONFIG_INIT_STACK_ALL
 KBUILD_CFLAGS	+= -ftrivial-auto-var-init=pattern
-endif
-
-# Initialize all stack variables with a zero value.
-ifdef CONFIG_INIT_STACK_ALL_ZERO
-KBUILD_CFLAGS	+= -ftrivial-auto-var-init=zero
-ifdef CONFIG_CC_HAS_AUTO_VAR_INIT_ZERO_ENABLER
-# https://github.com/llvm/llvm-project/issues/44842
-KBUILD_CFLAGS	+= -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang
-endif
 endif
 
 DEBUG_CFLAGS	:= $(call cc-option, -fno-var-tracking-assignments)
@@ -873,8 +825,7 @@ DEBUG_CFLAGS	+= -gsplit-dwarf
 else
 DEBUG_CFLAGS	+= -g
 endif
-
-ifdef CONFIG_AS_IS_LLVM
+ifeq ($(LLVM_IAS),1)
 KBUILD_AFLAGS	+= -g
 else
 KBUILD_AFLAGS	+= -Wa,-gdwarf-2
@@ -938,56 +889,6 @@ ifdef CONFIG_LIVEPATCH
 KBUILD_CFLAGS += $(call cc-option, -flive-patching=inline-clone)
 endif
 
-ifdef CONFIG_SHADOW_CALL_STACK
-CC_FLAGS_SCS	:= -fsanitize=shadow-call-stack
-KBUILD_CFLAGS	+= $(CC_FLAGS_SCS)
-export CC_FLAGS_SCS
-endif
-
-ifdef CONFIG_LTO_CLANG
-ifdef CONFIG_THINLTO
-CC_FLAGS_LTO_CLANG := -flto=thin $(call cc-option, -fsplit-lto-unit)
-else
-CC_FLAGS_LTO_CLANG := -flto
-endif
-CC_FLAGS_LTO_CLANG += -fvisibility=default
-
-# Limit inlining across translation units to reduce binary size
-LD_FLAGS_LTO_CLANG := -mllvm -import-instr-limit=5
-
-KBUILD_LDFLAGS += $(LD_FLAGS_LTO_CLANG)
-KBUILD_LDFLAGS_MODULE += $(LD_FLAGS_LTO_CLANG)
-
-KBUILD_LDS_MODULE += $(srctree)/scripts/module-lto.lds
-endif
-
-ifdef CONFIG_LTO
-CC_FLAGS_LTO	:= $(CC_FLAGS_LTO_CLANG)
-KBUILD_CFLAGS	+= -fno-lto $(CC_FLAGS_LTO)
-KBUILD_AFLAGS	+= -fno-lto
-export CC_FLAGS_LTO
-endif
-
-ifdef CONFIG_CFI_CLANG
-CC_FLAGS_CFI	:= -fsanitize=cfi \
-		   -fno-sanitize-cfi-canonical-jump-tables \
-		   -fno-sanitize-blacklist
-
-ifdef CONFIG_MODULES
-CC_FLAGS_CFI	+= -fsanitize-cfi-cross-dso
-endif
-
-ifdef CONFIG_CFI_PERMISSIVE
-CC_FLAGS_CFI	+= -fsanitize-recover=cfi \
-		   -fno-sanitize-trap=cfi
-endif
-
-# If LTO flags are filtered out, we must also filter out CFI.
-CC_FLAGS_LTO	+= $(CC_FLAGS_CFI)
-KBUILD_CFLAGS	+= $(CC_FLAGS_CFI)
-export CC_FLAGS_CFI
-endif
-
 # arch Makefile may override CC so keep this after arch Makefile is included
 NOSTDINC_FLAGS += -nostdinc -isystem $(shell $(CC) -print-file-name=include)
 
@@ -1016,6 +917,15 @@ KBUILD_CFLAGS += $(call cc-disable-warning, maybe-uninitialized)
 
 # disable invalid "can't wrap" optimizations for signed / pointers
 KBUILD_CFLAGS	+= $(call cc-option,-fno-strict-overflow)
+
+# clang sets -fmerge-all-constants by default as optimization, but this
+# is non-conforming behavior for C and in fact breaks the kernel, so we
+# need to disable it here generally.
+KBUILD_CFLAGS	+= $(call cc-option,-fno-merge-all-constants)
+
+# for gcc -fno-merge-all-constants disables everything, but it is fine
+# to have actual conforming behavior enabled.
+KBUILD_CFLAGS	+= $(call cc-option,-fmerge-constants)
 
 # Make sure -fstack-check isn't enabled (like gentoo apparently did)
 KBUILD_CFLAGS  += $(call cc-option,-fno-stack-check,)
@@ -1058,18 +968,13 @@ LDFLAGS_vmlinux	+= $(call ld-option, -X,)
 endif
 
 ifeq ($(CONFIG_RELR),y)
-# ld.lld before 15 did not support -z pack-relative-relocs.
-LDFLAGS_vmlinux	+= $(call ld-option,--pack-dyn-relocs=relr,-z pack-relative-relocs)
+LDFLAGS_vmlinux	+= --pack-dyn-relocs=relr --use-android-relr-tags
 endif
 
 # userspace programs are linked via the compiler, use the correct linker
 ifeq ($(CONFIG_CC_IS_CLANG)$(CONFIG_LD_IS_LLD),yy)
 KBUILD_USERLDFLAGS += $(call cc-option, --ld-path=$(LD))
 endif
-
-# Align the bit size of userspace programs with the kernel
-KBUILD_USERCFLAGS  += $(filter -m32 -m64, $(KBUILD_CFLAGS))
-KBUILD_USERLDFLAGS += $(filter -m32 -m64, $(KBUILD_CFLAGS))
 
 # make the checker run with the right architecture
 CHECKFLAGS += --arch=$(ARCH)
@@ -1216,12 +1121,9 @@ endif
 
 autoksyms_h := $(if $(CONFIG_TRIM_UNUSED_KSYMS), include/generated/autoksyms.h)
 
-quiet_cmd_autoksyms_h = GEN     $@
-      cmd_autoksyms_h = mkdir -p $(dir $@); \
-			$(CONFIG_SHELL) $(srctree)/scripts/gen_autoksyms.sh $@
-
 $(autoksyms_h):
-	$(call cmd,autoksyms_h)
+	$(Q)mkdir -p $(dir $@)
+	$(Q)touch $@
 
 ARCH_POSTLINK := $(wildcard $(srctree)/arch/$(SRCARCH)/Makefile.postlink)
 
@@ -1240,8 +1142,7 @@ targets := vmlinux
 $(sort $(vmlinux-deps)): descend ;
 
 filechk_kernel.release = \
-	echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion \
-		$(srctree) $(BRANCH) $(KMI_GENERATION))"
+	echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))"
 
 # Store (new) KERNELRELEASE string in include/config/kernel.release
 include/config/kernel.release: FORCE
@@ -1301,17 +1202,12 @@ endif
 # needs to be updated, so this check is forced on all builds
 
 uts_len := 64
-ifneq (,$(BUILD_NUMBER))
-	UTS_RELEASE=$(KERNELRELEASE)-ab$(BUILD_NUMBER)
-else
-	UTS_RELEASE=$(KERNELRELEASE)
-endif
 define filechk_utsrelease.h
-	if [ `echo -n "$(UTS_RELEASE)" | wc -c ` -gt $(uts_len) ]; then \
-		echo '"$(UTS_RELEASE)" exceeds $(uts_len) characters' >&2;    \
-		exit 1;                                                       \
-	fi;                                                             \
-	echo \#define UTS_RELEASE \"$(UTS_RELEASE)\"
+	if [ `echo -n "$(KERNELRELEASE)" | wc -c ` -gt $(uts_len) ]; then \
+	  echo '"$(KERNELRELEASE)" exceeds $(uts_len) characters' >&2;    \
+	  exit 1;                                                         \
+	fi;                                                               \
+	echo \#define UTS_RELEASE \"$(KERNELRELEASE)\"
 endef
 
 define filechk_version.h
@@ -1360,26 +1256,17 @@ PHONY += archheaders archscripts
 
 hdr-inst := -f $(srctree)/scripts/Makefile.headersinst obj
 
-techpack-dirs := $(shell find $(srctree)/techpack -maxdepth 1 -mindepth 1 -type d -not -name ".*")
-techpack-dirs := $(subst $(srctree)/,,$(techpack-dirs))
-
 PHONY += headers
 headers: $(version_h) scripts_unifdef uapi-asm-generic archheaders archscripts
 	$(if $(wildcard $(srctree)/arch/$(SRCARCH)/include/uapi/asm/Kbuild),, \
 	  $(error Headers not exportable for the $(SRCARCH) architecture))
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(SRCARCH)/include/uapi
-	$(Q)for d in $(techpack-dirs); do \
-		$(MAKE) $(hdr-inst)=$$d/include/uapi; \
-	done
 
 # Deprecated. It is no-op now.
 PHONY += headers_check
 headers_check:
 	@:
-	$(Q)for d in $(techpack-dirs); do \
-		$(MAKE) $(hdr-inst)=$$d/include/uapi HDRCHECK=1; \
-	done
 
 ifdef CONFIG_HEADERS_INSTALL
 prepare: headers
@@ -1470,10 +1357,6 @@ endif
 
 PHONY += modules
 modules: $(if $(KBUILD_BUILTIN),vmlinux) modules.order modules.builtin
-ifdef CONFIG_TRIM_UNUSED_KSYMS
-	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/adjust_autoksyms.sh \
-	  "$(MAKE) -f $(srctree)/Makefile vmlinux"
-endif
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.modpost
 	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/modules-check.sh
 
@@ -1909,8 +1792,7 @@ clean: $(clean-dirs)
 		-o -name modules.builtin -o -name '.tmp_*.o.*' \
 		-o -name '*.c.[012]*.*' \
 		-o -name '*.ll' \
-		-o -name '*.gcno' \
-		-o -name '*.*.symversions' \) -type f -print | xargs rm -f
+		-o -name '*.gcno' \) -type f -print | xargs rm -f
 
 # Generate tags for editors
 # ---------------------------------------------------------------------------
@@ -1969,8 +1851,7 @@ checkstack:
 	$(PERL) $(srctree)/scripts/checkstack.pl $(CHECKSTACK_ARCH)
 
 kernelrelease:
-	@echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion \
-		$(srctree) $(BRANCH) $(KMI_GENERATION))"
+	@echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))"
 
 kernelversion:
 	@echo $(KERNELVERSION)
