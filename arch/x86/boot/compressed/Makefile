@@ -65,6 +65,8 @@ KBUILD_LDFLAGS += -z notext
 
 KBUILD_LDFLAGS += -z notext
 
+KBUILD_LDFLAGS += -z notext
+
 KBUILD_LDFLAGS += -z noexecstack
 KBUILD_LDFLAGS += $(call ld-option,--no-warn-rwx-segments)
 
