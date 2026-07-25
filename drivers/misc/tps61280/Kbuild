@@ -2,4 +2,9 @@
 EXTRA_CFLAGS += -Wall
 EXTRA_CFLAGS += -I$(TOP)/motorola/kernel/modules/include
 
-obj-m += tps61280.o
+cirrus_cs40l2x-objs = cs40l2x.o cs40l2x-tables.o
+obj-m += cirrus_cs40l2x.o
+
+obj-$(CONFIG_QSEECOM)           += qseecom-mod.o
+qseecom-mod-y                   := qseecom.o
+qseecom-mod-$(CONFIG_COMPAT)    += compat_qseecom.o
