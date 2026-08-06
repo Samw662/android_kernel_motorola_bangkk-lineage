@@ -1,1 +1,5 @@
-obj-$(CONFIG_MMI_RELAY) += mmi_relay.o
+# add -Wall to try to catch everything we can.
+EXTRA_CFLAGS += -Wall
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/include
+
+obj-y += mmi_relay.o
