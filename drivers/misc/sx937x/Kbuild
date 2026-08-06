@@ -1,7 +1,18 @@
-ccflags-y += -I$(srctree)/$(src)/../../../drivers/base
+# SPDX-License-Identifier: GPL-2.0-only
 
-ccflags-$(CONFIG_SX937X_USB_CAL) += -DCONFIG_CAPSENSE_USB_CAL
-ccflags-$(CONFIG_SX937X_POWER_SUPPLY_ONLINE) += -DCONFIG_USE_POWER_SUPPLY_ONLINE
-ccflags-$(CONFIG_SX937X_FLIP_CAL) += -DCONFIG_CAPSENSE_FLIP_CAL
+ccflags-y += -Wall
+ccflags-y += -I$(srctree)/drivers/base
 
-obj-$(CONFIG_SARSENSOR_SX937X) += sx937x_sar.o
+ifneq ($(filter m y,$(CONFIG_SX937X_USB_CAL)),)
+    ccflags-y += -DCONFIG_CAPSENSE_USB_CAL
+endif
+
+ifneq ($(filter m y,$(CONFIG_SX937X_POWER_SUPPLY_ONLINE)),)
+    ccflags-y += -DCONFIG_USE_POWER_SUPPLY_ONLINE
+endif
+
+ifneq ($(filter m y,$(CONFIG_SX937X_FLIP_CAL)),)
+    ccflags-y += -DCONFIG_CAPSENSE_FLIP_CAL
+endif
+
+obj-$(CONFIG_SX937X_SAR) += sx937x_sar.o

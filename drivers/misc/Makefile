@@ -65,10 +65,7 @@ qseecom-mod-$(CONFIG_COMPAT)	+= compat_qseecom.o
 obj-$(CONFIG_PROFILER)			+= profiler.o
 obj-$(CONFIG_WIGIG_SENSING_SPI)	+= wigig_sensing.o
 obj-$(CONFIG_HISI_HIKEY_USB)	+= hisi_hikey_usb.o
-
-obj-y				+= awinic/
-obj-$(CONFIG_LDO_VIBRATOR_MMI)	+= ldo_vibrator_mmi/
-obj-$(CONFIG_MMI_SYS_TEMP)	+= mmi_sys_temp/
-obj-$(CONFIG_MISC_BU520XX_PEN)	+= pen/
-obj-$(CONFIG_SARSENSOR_SX937X)	+= sx937x/
-obj-$(CONFIG_MOTO_UTAGS) 	+= utag/
+obj-y				+= ldo_vibrator_mmi/
+obj-$(CONFIG_AWINIC_SAR) 	+= awinic/
+obj-$(CONFIG_SX937X_SAR) 	+= sx937x/
+obj-$(CONFIG_UTAG)  += utag/
