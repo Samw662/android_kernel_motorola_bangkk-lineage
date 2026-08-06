@@ -1,15 +1,21 @@
-KERNEL_CAMERA_DRIVER_PATH ?= $(srctree)/$(src)/../../../../../../../techpack/camera/drivers
+# SPDX-License-Identifier: GPL-2.0-only
 
+ccflags-y += -Wall
 ccflags-y += -DCONFIG_SPECTRA_CAMERA=1
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/../include
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/../include/uapi
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/../include/uapi/camera
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/cam_utils
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/cam_cpas/include
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/cam_sensor_module/cam_sensor_io
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/cam_sensor_module/cam_sensor_utils
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/cam_sensor_module/cam_cci
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/cam_req_mgr
-ccflags-y += -I$(KERNEL_CAMERA_DRIVER_PATH)/cam_smmu
 
-obj-$(CONFIG_CAMERA_CCI_INTF) += cci_intf.o
+TECHPACK_CAM := $(srctree)/techpack/camera
+
+ccflags-y += -I$(TECHPACK_CAM)/include
+ccflags-y += -I$(TECHPACK_CAM)/include/uapi
+ccflags-y += -I$(TECHPACK_CAM)/include/uapi/camera
+ccflags-y += -I$(TECHPACK_CAM)/drivers/cam_utils
+ccflags-y += -I$(TECHPACK_CAM)/drivers/cam_cpas/include
+ccflags-y += -I$(TECHPACK_CAM)/drivers/cam_sensor_module/cam_sensor_io
+ccflags-y += -I$(TECHPACK_CAM)/drivers/cam_sensor_module/cam_sensor_utils
+ccflags-y += -I$(TECHPACK_CAM)/drivers/cam_sensor_module/cam_cci
+ccflags-y += -I$(TECHPACK_CAM)/drivers/cam_req_mgr
+ccflags-y += -I$(TECHPACK_CAM)/drivers/cam_smmu
+
+ccflags-y += -I$(srctree)/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci
+
+obj-$(CONFIG_CCI_INTF) += cci_intf.o
