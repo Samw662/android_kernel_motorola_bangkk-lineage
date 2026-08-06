@@ -116,8 +116,8 @@ static void wg_receive_handshake_packet(struct wg_device *wg,
 		return;
 	}
 
-	under_load = atomic_read(&wg->handshake_queue_len) >=
-			MAX_QUEUED_INCOMING_HANDSHAKES / 8;
+	under_load = skb_queue_len(&wg->incoming_handshakes) >=
+		     MAX_QUEUED_INCOMING_HANDSHAKES / 8;
 	if (under_load) {
 		last_under_load = ktime_get_coarse_boottime_ns();
 	} else if (last_under_load) {
@@ -212,14 +212,13 @@ static void wg_receive_handshake_packet(struct wg_device *wg,
 
 void wg_packet_handshake_receive_worker(struct work_struct *work)
 {
-	struct crypt_queue *queue = container_of(work, struct multicore_worker, work)->ptr;
-	struct wg_device *wg = container_of(queue, struct wg_device, handshake_queue);
+	struct wg_device *wg = container_of(work, struct multicore_worker,
+					    work)->ptr;
 	struct sk_buff *skb;
 
-	while ((skb = ptr_ring_consume_bh(&queue->ring)) != NULL) {
+	while ((skb = skb_dequeue(&wg->incoming_handshakes)) != NULL) {
 		wg_receive_handshake_packet(wg, skb);
 		dev_kfree_skb(skb);
-		atomic_dec(&wg->handshake_queue_len);
 		cond_resched();
 	}
 }
@@ -258,7 +257,7 @@ static bool decrypt_packet(struct sk_buff *skb, struct noise_keypair *keypair)
 
 	if (unlikely(!READ_ONCE(keypair->receiving.is_valid) ||
 		  wg_birthdate_has_expired(keypair->receiving.birthdate, REJECT_AFTER_TIME) ||
-		  READ_ONCE(keypair->receiving_counter.counter) >= REJECT_AFTER_MESSAGES)) {
+		  keypair->receiving_counter.counter >= REJECT_AFTER_MESSAGES)) {
 		WRITE_ONCE(keypair->receiving.is_valid, false);
 		return false;
 	}
@@ -325,7 +324,7 @@ static bool counter_validate(struct noise_replay_counter *counter, u64 their_cou
 		for (i = 1; i <= top; ++i)
 			counter->backtrack[(i + index_current) &
 				((COUNTER_BITS_TOTAL / BITS_PER_LONG) - 1)] = 0;
-		WRITE_ONCE(counter->counter, their_counter);
+		counter->counter = their_counter;
 	}
 
 	index &= (COUNTER_BITS_TOTAL / BITS_PER_LONG) - 1;
@@ -470,7 +469,7 @@ int wg_packet_rx_poll(struct napi_struct *napi, int budget)
 			net_dbg_ratelimited("%s: Packet has invalid nonce %llu (max %llu)\n",
 					    peer->device->dev->name,
 					    PACKET_CB(skb)->nonce,
-					    READ_ONCE(keypair->receiving_counter.counter));
+					    keypair->receiving_counter.counter);
 			goto next;
 		}
 
@@ -531,7 +530,7 @@ static void wg_packet_consume_data(struct wg_device *wg, struct sk_buff *skb)
 		goto err;
 
 	ret = wg_queue_enqueue_per_device_and_peer(&wg->decrypt_queue, &peer->rx_queue, skb,
-						   wg->packet_crypt_wq);
+						   wg->packet_crypt_wq, &wg->decrypt_queue.last_cpu);
 	if (unlikely(ret == -EPIPE))
 		wg_queue_enqueue_per_peer_rx(skb, PACKET_STATE_DEAD);
 	if (likely(!ret || ret == -EPIPE)) {
@@ -554,28 +553,22 @@ void wg_packet_receive(struct wg_device *wg, struct sk_buff *skb)
 	case cpu_to_le32(MESSAGE_HANDSHAKE_INITIATION):
 	case cpu_to_le32(MESSAGE_HANDSHAKE_RESPONSE):
 	case cpu_to_le32(MESSAGE_HANDSHAKE_COOKIE): {
-		int cpu, ret = -EBUSY;
+		int cpu;
 
-		if (unlikely(!rng_is_initialized()))
-			goto drop;
-		if (atomic_read(&wg->handshake_queue_len) > MAX_QUEUED_INCOMING_HANDSHAKES / 2) {
-			if (spin_trylock_bh(&wg->handshake_queue.ring.producer_lock)) {
-				ret = __ptr_ring_produce(&wg->handshake_queue.ring, skb);
-				spin_unlock_bh(&wg->handshake_queue.ring.producer_lock);
-			}
-		} else
-			ret = ptr_ring_produce_bh(&wg->handshake_queue.ring, skb);
-		if (ret) {
-	drop:
+		if (skb_queue_len(&wg->incoming_handshakes) >
+			    MAX_QUEUED_INCOMING_HANDSHAKES ||
+		    unlikely(!rng_is_initialized())) {
 			net_dbg_skb_ratelimited("%s: Dropping handshake packet from %pISpfsc\n",
 						wg->dev->name, skb);
 			goto err;
 		}
-		atomic_inc(&wg->handshake_queue_len);
-		cpu = wg_cpumask_next_online(&wg->handshake_queue.last_cpu);
-		/* Queues up a call to packet_process_queued_handshake_packets(skb): */
+		skb_queue_tail(&wg->incoming_handshakes, skb);
+		/* Queues up a call to packet_process_queued_handshake_
+		 * packets(skb):
+		 */
+		cpu = wg_cpumask_next_online(&wg->incoming_handshake_cpu);
 		queue_work_on(cpu, wg->handshake_receive_wq,
-			      &per_cpu_ptr(wg->handshake_queue.worker, cpu)->work);
+			&per_cpu_ptr(wg->incoming_handshakes_worker, cpu)->work);
 		break;
 	}
 	case cpu_to_le32(MESSAGE_DATA):
