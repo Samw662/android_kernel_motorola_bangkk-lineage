@@ -18135,7 +18135,12 @@ static int __init hdd_module_init(void)
 	if (ret)
 		hdd_err("Failed to create sysfs entry");
 
-	return ret;
+	if (hdd_driver_load()) {
+		hdd_err("Failed to load wlan driver");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 #endif
 
