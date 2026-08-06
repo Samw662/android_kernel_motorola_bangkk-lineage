@@ -1,1 +1,4 @@
-obj-$(CONFIG_RADIO_ELNA) += fm_ctrl.o
+# add -Wall to try to catch everything we can.
+EXTRA_CFLAGS += -Wall
+
+obj-$(CONFIG_FM_CTRL) += fm_ctrl.o
