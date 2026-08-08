@@ -524,6 +524,10 @@ struct sock {
 	ANDROID_KABI_RESERVE(8);
 
 	ANDROID_VENDOR_DATA(1);
+
+#if IS_ENABLED(CONFIG_PROVE_LOCKING) && IS_ENABLED(CONFIG_MODULES)
+	struct module		*sk_owner;
+#endif
 };
 
 enum sk_pacing {
