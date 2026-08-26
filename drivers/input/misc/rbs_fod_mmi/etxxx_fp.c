@@ -1455,7 +1455,7 @@ int egisfp_probe(struct platform_device *pdev)
 
 	g_data = egis_dev;
 #ifdef MMI_RELAY_MODULE
-	fpsData = FPS_init(void);
+	fpsData = FPS_init();
 #endif
 
 	DEBUG_PRINT(" %s : initialize success %d\n", __func__, status);
