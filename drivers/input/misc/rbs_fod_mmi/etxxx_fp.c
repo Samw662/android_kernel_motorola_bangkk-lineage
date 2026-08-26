@@ -162,7 +162,7 @@ static int fps_mmi_relay_cb(struct notifier_block *self,
 }
 
 
-static struct FPS_data *FPS_init()
+static struct FPS_data *FPS_init(void)
 {
 	int ret =0;
 	struct FPS_data *mdata = kzalloc(sizeof(struct FPS_data), GFP_KERNEL);
@@ -1455,7 +1455,7 @@ int egisfp_probe(struct platform_device *pdev)
 
 	g_data = egis_dev;
 #ifdef MMI_RELAY_MODULE
-	fpsData = FPS_init();
+	fpsData = FPS_init(void);
 #endif
 
 	DEBUG_PRINT(" %s : initialize success %d\n", __func__, status);
