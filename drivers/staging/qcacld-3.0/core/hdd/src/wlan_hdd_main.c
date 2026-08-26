@@ -17843,10 +17843,17 @@ int hdd_driver_load(void)
 	osif_driver_sync_register(driver_sync);
 	osif_driver_sync_trans_stop(driver_sync);
 
+	errno = wlan_hdd_state_ctrl_param_create();
+	if (errno) {
+		hdd_err("Failed to create state ctrl param; errno:%d", errno);
+		goto pld_deinit;
+	}
+
 	/* psoc probe can happen in registration; do after 'load' transition */
 	errno = wlan_hdd_register_driver();
 	if (errno) {
 		hdd_err("Failed to register driver; errno:%d", errno);
+		wlan_hdd_state_ctrl_param_destroy();
 		goto pld_deinit;
 	}
 
