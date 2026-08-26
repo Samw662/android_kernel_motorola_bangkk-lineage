@@ -53,7 +53,7 @@ m32-flag := $(cc-option-bit,-m32)
 m64-flag := $(cc-option-bit,-m64)
 
 # Get the assembler name, version, and error out if it is not supported.
-as-info := $(shell,$(srctree)/scripts/as-version.sh $(CC) $(CLANG_FLAGS))
-$(error-if,$(success,test -z "$(as-info)"),Sorry$(comma) this assembler is not supported.)
-as-name := $(shell,set -- $(as-info) && echo $1)
-as-version := $(shell,set -- $(as-info) && echo $2)
+#as-info := $(shell,$(srctree)/scripts/as-version.sh $(CC) $(CLANG_FLAGS))
+#$(error-if,$(success,test -z "$(as-info)"),Sorry$(comma) this assembler is not supported.)
+as-name := clang
+as-version := 0

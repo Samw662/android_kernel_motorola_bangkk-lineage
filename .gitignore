@@ -153,3 +153,16 @@ arch/arm/boot/dts/vendor
 #Ignoring Android.bp link file
 #
 Android.bp
+Stars-*.zip
+weary.log
+build_ram.sh
+build_local.sh
+out/
+
+# Build artifacts
+Stars-*.zip
+weary.log
+out/
+build_ram.sh
+build_local.sh
+AnyKernel3/

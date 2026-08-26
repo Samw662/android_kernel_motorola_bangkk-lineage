@@ -1,4 +1,4 @@
-SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the input misc drivers.
 #
@@ -87,4 +87,12 @@ obj-$(CONFIG_INPUT_WM831X_ON)		+= wm831x-on.o
 obj-$(CONFIG_INPUT_XEN_KBDDEV_FRONTEND)	+= xen-kbdfront.o
 obj-$(CONFIG_INPUT_YEALINK)		+= yealink.o
 obj-$(CONFIG_INPUT_IDEAPAD_SLIDEBAR)	+= ideapad_slidebar.o
-obj-$(CONFIG_RBS_FOD_MMI) 		+= rbs_fod_mmi/
+
+obj-$(CONFIG_INPUT_CHIPONE_FPS_MMI)	+= chipone_fps_mmi/
+obj-$(CONFIG_INPUT_ETS_BIX_MMI)		+= ets_bix_mmi/
+obj-$(CONFIG_INPUT_FOCAL_FPS_MMI)	+= focal_fps_mmi/
+obj-$(CONFIG_INPUT_MISC_FPC1020)	+= fpc_fps_mmi/
+obj-$(CONFIG_INPUT_GOODIX_FOD_MMI)	+= goodix_fod_mmi/
+obj-$(CONFIG_INPUT_RBS_FOD_MMI)		+= rbs_fod_mmi/
+obj-$(CONFIG_INPUT_EGIS_FPS_MMI)	+= rbs_fps_mmi/
+obj-$(CONFIG_INPUT_SILEAD_FPS_MMI)	+= silead_fps_mmi/
