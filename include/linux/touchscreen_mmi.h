@@ -198,6 +198,12 @@ struct msm_drm_notifier *evdata = evd; \
 #define unregister_panel_notifier(...)
 #define REGISTER_PANEL_NOTIFIER register_panel_notifier(touch_cdev)
 #define UNREGISTER_PANEL_NOTIFIER unregister_panel_notifier(touch_cdev)
+#define GET_CONTROL_DSI_INDEX int idx = 0; int *blank = NULL;
+#define EVENT_PRE_DISPLAY_OFF (0)
+#define EVENT_DISPLAY_OFF (0)
+#define EVENT_PRE_DISPLAY_ON (0)
+#define EVENT_DISPLAY_ON (0)
+#define EVENT_DISPLAY_LP (0)
 
 #endif /* CONFIG_DRM_MSM */
 #else /* LINUX_VERSION_CODE */
@@ -207,6 +213,12 @@ struct msm_drm_notifier *evdata = evd; \
 #define unregister_panel_notifier(...)
 #define REGISTER_PANEL_NOTIFIER register_panel_notifier(touch_cdev)
 #define UNREGISTER_PANEL_NOTIFIER unregister_panel_notifier(touch_cdev)
+#define GET_CONTROL_DSI_INDEX int idx = 0; int *blank = NULL;
+#define EVENT_PRE_DISPLAY_OFF (0)
+#define EVENT_DISPLAY_OFF (0)
+#define EVENT_PRE_DISPLAY_ON (0)
+#define EVENT_DISPLAY_ON (0)
+#define EVENT_DISPLAY_LP (0)
 
 #endif /* LINUX_VERSION_CODE */
 #endif /* CONFIG_DRM_PANEL_NOTIFICATIONS */
