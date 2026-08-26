@@ -196,6 +196,8 @@ struct msm_drm_notifier *evdata = evd; \
 #warning That isn't supposed to happen!!!
 #define register_panel_notifier(...) ret
 #define unregister_panel_notifier(...)
+#define REGISTER_PANEL_NOTIFIER register_panel_notifier(touch_cdev)
+#define UNREGISTER_PANEL_NOTIFIER unregister_panel_notifier(touch_cdev)
 
 #endif /* CONFIG_DRM_MSM */
 #else /* LINUX_VERSION_CODE */
@@ -203,6 +205,8 @@ struct msm_drm_notifier *evdata = evd; \
 #warning Panel notifier undefined!!!
 #define register_panel_notifier(...) ret
 #define unregister_panel_notifier(...)
+#define REGISTER_PANEL_NOTIFIER register_panel_notifier(touch_cdev)
+#define UNREGISTER_PANEL_NOTIFIER unregister_panel_notifier(touch_cdev)
 
 #endif /* LINUX_VERSION_CODE */
 #endif /* CONFIG_DRM_PANEL_NOTIFICATIONS */
