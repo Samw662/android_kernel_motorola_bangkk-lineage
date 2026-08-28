@@ -1,0 +1,27 @@
+#
+# Focaltech v3 MMI touchscreen driver configuration
+#
+config TOUCHSCREEN_FOCALTECH_V3_MMI
+	tristate "MMI Focaltech v3 touchscreen"
+	default n
+	help
+	  Say Y here if you have a MMI Focaltech v3 series touch controller
+	  attached to your system.
+
+	  If build module, say M.
+	  If unsure, say N.
+
+config INPUT_FOCALTECH_MMI_IC_NAME
+	string "Focaltech v3 IC name"
+	depends on TOUCHSCREEN_FOCALTECH_V3_MMI
+	default "ft3519"
+	help
+	  Focaltech v3 touch controller IC name (ft3519 or ft3518u).
+
+config INPUT_FOCALTECH_MMI_ENABLE_DOUBLE_TAP
+	bool "Enable double tap"
+	depends on TOUCHSCREEN_FOCALTECH_V3_MMI
+	default n
+	help
+	  Say Y here to enable double tap functionality on the Focaltech v3
+	  touch panel.
