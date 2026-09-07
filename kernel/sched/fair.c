@@ -4678,15 +4678,50 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF: after selecting the leftmost entity by vruntime,
-	 * check if the current (preempted) entity has an earlier
-	 * deadline. If so, prefer it to reduce scheduling latency.
-	 * This ensures latency-sensitive tasks with tight deadlines
-	 * get scheduled promptly.
+	 * EEVDF: full rb-tree scan to find the eligible entity with the
+	 * earliest virtual deadline. This replaces the simplified
+	 * curr-vs-leftmost comparison with a proper EEVDF selection.
+	 *
+	 * An entity is eligible if its vruntime <= avg_vruntime (i.e.,
+	 * it hasn't consumed more than its fair share). Among eligible
+	 * entities, we pick the one with the earliest deadline.
+	 *
+	 * This is O(n) in the number of runnable entities, which is
+	 * acceptable for mobile workloads (typically 10-50 tasks).
 	 */
-	if (curr && curr != se &&
-	    (s64)(curr->deadline - se->deadline) < 0)
-		se = curr;
+	{
+		struct rb_node *node;
+		struct sched_entity *best = se;
+		u64 avgvr = avg_vruntime(cfs_rq);
+
+		/* Scan the rb-tree for the best eligible deadline */
+		node = rb_first_cached(&cfs_rq->tasks_timeline);
+		while (node) {
+			se = rb_entry(node, struct sched_entity, run_node);
+
+			/*
+			 * Check eligibility: vruntime <= avg_vruntime.
+			 * Only consider entities that haven't exceeded
+			 * their fair share of CPU time.
+			 */
+			if ((s64)(se->vruntime - avgvr) <= 0) {
+				if ((s64)(se->deadline - best->deadline) < 0)
+					best = se;
+			}
+
+			node = rb_next(node);
+		}
+
+		/* Also check curr as it's not in the rb-tree */
+		if (curr && curr != best) {
+			if ((s64)(curr->vruntime - avgvr) <= 0) {
+				if ((s64)(curr->deadline - best->deadline) < 0)
+					best = curr;
+			}
+		}
+
+		se = best;
+	}
 #endif
 
 	/*
@@ -4761,6 +4796,20 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
 	cfs_rq->curr = NULL;
 }
 
+#ifdef CONFIG_SCHED_EEVDF
+/*
+ * EEVDF: if the current entity has consumed its virtual deadline,
+ * force a reschedule so pick_next_entity() can select the entity
+ * with the earliest deadline. Without this check, a task could
+ * keep running past its deadline if no other task wakes up.
+ */
+static void entity_tick_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *curr)
+{
+	if ((s64)(curr->deadline - curr->vruntime) <= 0)
+		resched_curr(rq_of(cfs_rq));
+}
+#endif
+
 static void
 entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 {
@@ -4794,6 +4843,10 @@ entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 
 	if (cfs_rq->nr_running > 1)
 		check_preempt_tick(cfs_rq, curr);
+
+#ifdef CONFIG_SCHED_EEVDF
+	entity_tick_eevdf(cfs_rq, curr);
+#endif
 }
 
 
