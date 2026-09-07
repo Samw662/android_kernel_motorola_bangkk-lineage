@@ -629,6 +629,13 @@ struct cfs_rq {
 	u64			min_vruntime_copy;
 #endif
 
+#ifdef CONFIG_SCHED_EEVDF
+	u64			avg_vruntime;
+	s64			weighted_vruntime_sum;
+	u32			avg_load;
+	u32			load_sum;
+#endif
+
 	struct rb_root_cached	tasks_timeline;
 
 	/*

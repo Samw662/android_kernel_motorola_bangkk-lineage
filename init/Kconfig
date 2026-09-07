@@ -482,6 +482,18 @@ config HAVE_SCHED_AVG_IRQ
 	depends on IRQ_TIME_ACCOUNTING || PARAVIRT_TIME_ACCOUNTING
 	depends on SMP
 
+config SCHED_EEVDF
+	bool "EEVDF CPU scheduler (backport)"
+	depends on SMP
+	help
+	Backport of the Earliest Eligible Virtual Deadline First (EEVDF)
+	CPU scheduler from Linux 6.6. Replaces the CFS picking logic
+	with deadline-based scheduling for improved latency and fairness.
+	When enabled, this modifies update_curr(), pick_next_entity(),
+	and check_preempt_wakeup() to use EEVDF metrics.
+
+	When in doubt, say N.
+
 config SCHED_WALT
 	bool "Support window based load tracking"
 	depends on SMP

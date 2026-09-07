@@ -849,6 +849,94 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq, int force)
 }
 #endif /* CONFIG_SMP */
 
+#ifdef CONFIG_SCHED_EEVDF
+
+/*
+ * EEVDF helper: compute the entity's eligible time.
+ * A task is eligible if its vruntime <= cfs_rq->avg_vruntime.
+ * Returns the eligible time (the vruntime at which the entity becomes eligible).
+ */
+static __maybe_unused s64 entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	return (s64)(se->vruntime - cfs_rq->avg_vruntime);
+}
+
+/*
+ * EEVDF helper: update the weighted average vruntime of the cfs_rq.
+ * Called when entities are enqueued/dequeued to maintain the running average.
+ */
+static __maybe_unused void avg_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	s64 vruntime_diff = (s64)(se->vruntime - cfs_rq->min_vruntime);
+
+	cfs_rq->weighted_vruntime_sum += vruntime_diff * se->load.weight;
+	cfs_rq->load_sum += se->load.weight;
+}
+
+static __maybe_unused void avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	s64 vruntime_diff = (s64)(se->vruntime - cfs_rq->min_vruntime);
+
+	cfs_rq->weighted_vruntime_sum -= vruntime_diff * se->load.weight;
+	cfs_rq->load_sum -= se->load.weight;
+}
+
+static __maybe_unused void avg_vruntime_update(struct cfs_rq *cfs_rq)
+{
+	if (cfs_rq->load_sum)
+		cfs_rq->avg_vruntime = cfs_rq->min_vruntime +
+			div_s64(cfs_rq->weighted_vruntime_sum, cfs_rq->load_sum);
+	else
+		cfs_rq->avg_vruntime = cfs_rq->min_vruntime;
+}
+
+/*
+ * EEVDF helper: update the entity's deadline based on its elapsed time.
+ * When an entity has consumed its allocated slice, recalculate deadline.
+ */
+static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	u64 deadline, slice;
+
+	/*
+	 * Only update deadline for entities that have a valid slice.
+	 * New entities without a slice use the default deadline.
+	 */
+	slice = se->slice;
+	if (!slice)
+		return;
+
+	/*
+	 * If the entity's vruntime has passed its deadline, compute
+	 * the new deadline as vruntime + slice. This ensures the entity
+	 * gets a new scheduling window.
+	 */
+	deadline = se->vruntime + slice;
+	if ((s64)(deadline - se->deadline) > 0)
+		se->deadline = deadline;
+}
+
+/*
+ * EEVDF helper: compute the time slice for an entity.
+ * The slice is based on sysctl_sched_latency divided by the number
+ * of runnable entities, clamped to sysctl_sched_min_granularity.
+ */
+static __maybe_unused u64 entity_slice(struct sched_entity *se)
+{
+	struct cfs_rq *cfs_rq = cfs_rq_of(se);
+	int nr_running = cfs_rq->nr_running;
+	u64 slice;
+
+	if (nr_running >= sched_nr_latency)
+		slice = sysctl_sched_min_granularity;
+	else
+		slice = div_u64((u64)sysctl_sched_latency, nr_running);
+
+	return slice;
+}
+
+#endif /* CONFIG_SCHED_EEVDF */
+
 /*
  * Update the current task's runtime statistics.
  */
@@ -875,6 +963,10 @@ static void update_curr(struct cfs_rq *cfs_rq)
 
 	curr->vruntime += calc_delta_fair(delta_exec, curr);
 	update_min_vruntime(cfs_rq);
+
+#ifdef CONFIG_SCHED_EEVDF
+	update_deadline(cfs_rq, curr);
+#endif
 
 	if (entity_is_task(curr)) {
 		struct task_struct *curtask = task_of(curr);
@@ -4118,17 +4210,11 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 			if (per_task_boost(task_of(se)) == TASK_BOOST_STRICT_MAX) {
 				vruntime -= thresh;
 				vruntime -= sysctl_sched_latency;
-				se->vruntime = vruntime;
-				return;
 			} else if (walt_binder_low_latency_task(task_of(se))) {
 				vruntime -= sysctl_sched_latency;
-				se->vruntime = vruntime;
-				return;
 			} else if (task_rtg_high_prio(task_of(se)) ||
 					walt_procfs_low_latency_task(task_of(se))) {
 				vruntime -= thresh;
-				se->vruntime = vruntime;
-				return;
 			}
 		}
 #endif
@@ -4157,6 +4243,17 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 		se->vruntime = vruntime;
 	else
 		se->vruntime = max_vruntime(se->vruntime, vruntime);
+
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: compute the entity's slice and deadline from the
+	 * (possibly boosted) vruntime. The WALT boosts above moved
+	 * vruntime backwards, which naturally makes deadline earlier
+	 * — equivalent to CFS's vruntime boost but in EEVDF's model.
+	 */
+	se->slice = entity_slice(se);
+	se->deadline = se->vruntime + se->slice;
+#endif
 }
 
 static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
@@ -4471,6 +4568,19 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		left = curr;
 
 	se = left; /* ideally we run the leftmost entity */
+
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: after selecting the leftmost entity by vruntime,
+	 * check if the current (preempted) entity has an earlier
+	 * deadline. If so, prefer it to reduce scheduling latency.
+	 * This ensures latency-sensitive tasks with tight deadlines
+	 * get scheduled promptly.
+	 */
+	if (curr && curr != se &&
+	    (s64)(curr->deadline - se->deadline) < 0)
+		se = curr;
+#endif
 
 	/*
 	 * Avoid running the skip buddy, if running something else can
@@ -7735,6 +7845,24 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	find_matching_se(&se, &pse);
 	update_curr(cfs_rq_of(se));
 	BUG_ON(!pse);
+
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF preemption: if the waker entity has an earlier deadline
+	 * than the current entity, it should preempt immediately. This
+	 * replaces the vruntime-based comparison with a deadline-based
+	 * one, which is more responsive for latency-sensitive tasks.
+	 */
+	if (entity_is_task(pse) && entity_is_task(se)) {
+		if ((s64)(pse->deadline - se->deadline) < 0) {
+			if (!next_buddy_marked)
+				set_next_buddy(pse);
+			goto preempt;
+		}
+		return;
+	}
+#endif
+
 	if (wakeup_preempt_entity(se, pse) == 1) {
 		/*
 		 * Bias pick_next to pick the sched entity that is
