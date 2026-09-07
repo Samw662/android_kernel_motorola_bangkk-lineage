@@ -883,9 +883,17 @@ static __maybe_unused void avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_
 
 static __maybe_unused void avg_vruntime_update(struct cfs_rq *cfs_rq)
 {
-	if (cfs_rq->load_sum)
+	s64 vruntime_sum = cfs_rq->weighted_vruntime_sum;
+	u32 total_weight = cfs_rq->load_sum;
+
+	if (cfs_rq->sleeping_weight_sum) {
+		vruntime_sum += cfs_rq->sleeping_vruntime_sum;
+		total_weight += cfs_rq->sleeping_weight_sum;
+	}
+
+	if (total_weight)
 		cfs_rq->avg_vruntime = cfs_rq->min_vruntime +
-			div_s64(cfs_rq->weighted_vruntime_sum, cfs_rq->load_sum);
+			div_s64(vruntime_sum, total_weight);
 	else
 		cfs_rq->avg_vruntime = cfs_rq->min_vruntime;
 }
@@ -897,10 +905,21 @@ static __maybe_unused void avg_vruntime_update(struct cfs_rq *cfs_rq)
  */
 static __maybe_unused u64 avg_vruntime(struct cfs_rq *cfs_rq)
 {
-	if (cfs_rq->load_sum)
-		return cfs_rq->min_vruntime +
-			div_s64(cfs_rq->weighted_vruntime_sum,
-				cfs_rq->load_sum);
+	s64 vruntime_sum = cfs_rq->weighted_vruntime_sum;
+	u32 total_weight = cfs_rq->load_sum;
+
+	/*
+	 * Include sleeping entities in the average. Their vruntime
+	 * contribution is tracked separately because they are removed
+	 * from the rb-tree but should still count for eligibility.
+	 */
+	if (cfs_rq->sleeping_weight_sum) {
+		vruntime_sum += cfs_rq->sleeping_vruntime_sum;
+		total_weight += cfs_rq->sleeping_weight_sum;
+	}
+
+	if (total_weight)
+		return cfs_rq->min_vruntime + div_s64(vruntime_sum, total_weight);
 	return cfs_rq->min_vruntime;
 }
 
@@ -4461,9 +4480,16 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF: add entity's contribution to the weighted average
-	 * vruntime after placement so avg_vruntime reflects the new state.
+	 * EEVDF: when a task wakes from sleep, remove its vruntime
+	 * contribution from the sleeping accumulator before adding it
+	 * back to the weighted average. This keeps avg_vruntime()
+	 * consistent across sleep/wake transitions.
 	 */
+	if ((flags & ENQUEUE_WAKEUP) && entity_is_task(se)) {
+		s64 vdiff = (s64)(se->vruntime - cfs_rq->min_vruntime);
+		cfs_rq->sleeping_vruntime_sum -= vdiff;
+		cfs_rq->sleeping_weight_sum -= se->load.weight;
+	}
 	avg_vruntime_add(cfs_rq, se);
 #endif
 
@@ -4572,9 +4598,17 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF: remove entity's contribution from weighted average
-	 * vruntime after dequeue so avg_vruntime reflects the new state.
+	 * EEVDF: when a task goes to sleep, track its vruntime contribution
+	 * separately so avg_vruntime() can include sleeping entities.
+	 * This prevents the average from becoming artificially inflated
+	 * when many tasks are sleeping, which would cause newly-woken
+	 * tasks to receive unfair scheduling priority.
 	 */
+	if ((flags & DEQUEUE_SLEEP) && entity_is_task(se)) {
+		s64 vdiff = (s64)(se->vruntime - cfs_rq->min_vruntime);
+		cfs_rq->sleeping_vruntime_sum += vdiff;
+		cfs_rq->sleeping_weight_sum += se->load.weight;
+	}
 	avg_vruntime_sub(cfs_rq, se);
 #endif
 
