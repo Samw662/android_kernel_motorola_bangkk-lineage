@@ -938,13 +938,37 @@ static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 static __maybe_unused u64 entity_slice(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
+	struct task_struct *p = task_of(se);
 	int nr_running = cfs_rq->nr_running;
 	u64 slice;
 
-	if (nr_running >= sched_nr_latency)
+	/*
+	 * EEVDF latency-aware slicing: map task latency classification
+	 * to slice size, which directly determines the virtual deadline.
+	 *
+	 * - Low-latency tasks (interactive, binder, procfs-flagged):
+	 *   shortest slice → earliest deadline → scheduled first
+	 * - SCHED_BATCH tasks: longest slice → latest deadline →
+	 *   yields CPU to interactive tasks
+	 * - Default SCHED_NORMAL: fair share slice based on nr_running
+	 */
+	if (p && p->policy == SCHED_BATCH) {
+		/*
+		 * Batch tasks get a slice 4x the default, giving them
+		 * a later deadline and less scheduling urgency.
+		 */
+		slice = sysctl_sched_latency;
+	} else if (p && walt_low_latency_task(p)) {
+		/*
+		 * Low-latency tasks (WALT-classified interactive) get
+		 * the minimum possible slice for earliest deadline.
+		 */
 		slice = sysctl_sched_min_granularity;
-	else
+	} else if (nr_running >= sched_nr_latency) {
+		slice = sysctl_sched_min_granularity;
+	} else {
 		slice = div_u64((u64)sysctl_sched_latency, nr_running);
+	}
 
 	return slice;
 }
