@@ -3043,6 +3043,29 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 	dequeue_load_avg(cfs_rq, se);
 
 	se->runnable_weight = runnable;
+
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: scale vlag proportionally to the weight change.
+	 *
+	 * The vlag represents: V - v_i (avg_vruntime minus entity vruntime).
+	 * The actual lag in scheduling terms is: w_i * (V - v_i).
+	 * When weight changes from w to w', we need:
+	 *   new_vlag = old_vlag * w / w'
+	 * so that the effective lag (w' * new_vlag) equals the old lag.
+	 *
+	 * Similarly, the deadline offset (deadline - vruntime) scales
+	 * inversely with weight: a heavier task gets a proportionally
+	 * larger deadline offset (longer slice in virtual time).
+	 */
+	if (se->on_rq && se->load.weight && weight) {
+		se->vlag = div_s64((s64)se->vlag * se->load.weight, weight);
+		se->deadline = se->vruntime +
+			div_s64((s64)(se->deadline - se->vruntime) *
+				se->load.weight, weight);
+	}
+#endif
+
 	update_load_set(&se->load, weight);
 
 #ifdef CONFIG_SMP
