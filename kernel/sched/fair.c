@@ -891,6 +891,20 @@ static __maybe_unused void avg_vruntime_update(struct cfs_rq *cfs_rq)
 }
 
 /*
+ * EEVDF helper: compute the weighted average vruntime of the cfs_rq.
+ * This is the reference point for lag computation — a task with
+ * vruntime == avg_vruntime has zero lag (perfectly fair).
+ */
+static __maybe_unused u64 avg_vruntime(struct cfs_rq *cfs_rq)
+{
+	if (cfs_rq->load_sum)
+		return cfs_rq->min_vruntime +
+			div_s64(cfs_rq->weighted_vruntime_sum,
+				cfs_rq->load_sum);
+	return cfs_rq->min_vruntime;
+}
+
+/*
  * EEVDF helper: update the entity's deadline based on its elapsed time.
  * When an entity has consumed its allocated slice, recalculate deadline.
  */
@@ -933,6 +947,34 @@ static __maybe_unused u64 entity_slice(struct sched_entity *se)
 		slice = div_u64((u64)sysctl_sched_latency, nr_running);
 
 	return slice;
+}
+
+/*
+ * EEVDF helper: compute and clamp the entity's lag.
+ *
+ * The lag represents how much CPU time the entity is owed (positive)
+ * or how much it has exceeded its fair share (negative). It is clamped
+ * to [-sysctl_sched_latency, +sysctl_sched_latency] to prevent
+ * runaway values from causing scheduling pathologies.
+ *
+ * Called from dequeue_entity() and put_prev_entity() to persist the
+ * lag across context switches.
+ */
+static __maybe_unused void update_entity_lag(struct cfs_rq *cfs_rq,
+					     struct sched_entity *se)
+{
+	s64 lag = avg_vruntime(cfs_rq) - se->vruntime;
+
+	/*
+	 * Clamp lag to prevent overflow. The upper bound is
+	 * sysctl_sched_latency (in vruntime units), the lower bound
+	 * is its negation. This ensures that even after long sleep,
+	 * the entity's lag doesn't cause it to dominate the runqueue.
+	 */
+	lag = min(lag, (s64)sysctl_sched_latency);
+	lag = max(lag, -(s64)sysctl_sched_latency);
+
+	se->vlag = lag;
 }
 
 #endif /* CONFIG_SCHED_EEVDF */
@@ -4193,6 +4235,23 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	if (initial && sched_feat(START_DEBIT))
 		vruntime += sched_vslice(cfs_rq, se);
 
+#ifdef CONFIG_SCHED_EEVDF
+	if (!initial && se->vlag) {
+		/*
+		 * EEVDF lag-based placement: restore the entity's position
+		 * relative to avg_vruntime using its persisted lag. A
+		 * positive vlag means the entity was owed CPU time, so it
+		 * should be placed ahead of avg_vruntime. A negative vlag
+		 * means it exceeded its share, so place it behind.
+		 */
+		u64 avgvr = avg_vruntime(cfs_rq);
+
+		if (se->vlag > 0)
+			vruntime = avgvr - se->vlag;
+		else
+			vruntime = avgvr + abs(se->vlag);
+	} else
+#endif
 	/* sleeps up to a single latency don't count. */
 	if (!initial) {
 		unsigned long thresh = sysctl_sched_latency;
@@ -4353,6 +4412,14 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	if (flags & ENQUEUE_MIGRATED)
 		se->exec_start = 0;
 
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: add entity's contribution to the weighted average
+	 * vruntime after placement so avg_vruntime reflects the new state.
+	 */
+	avg_vruntime_add(cfs_rq, se);
+#endif
+
 	check_schedstat_required();
 	update_stats_enqueue(cfs_rq, se, flags);
 	check_spread(cfs_rq, se);
@@ -4442,10 +4509,27 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 	clear_buddies(cfs_rq, se);
 
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: compute and persist the entity's lag before removing
+	 * it from the runqueue. The lag is used by place_entity() on
+	 * the next enqueue to determine fair placement.
+	 */
+	update_entity_lag(cfs_rq, se);
+#endif
+
 	if (se != cfs_rq->curr)
 		__dequeue_entity(cfs_rq, se);
 	se->on_rq = 0;
 	account_entity_dequeue(cfs_rq, se);
+
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: remove entity's contribution from weighted average
+	 * vruntime after dequeue so avg_vruntime reflects the new state.
+	 */
+	avg_vruntime_sub(cfs_rq, se);
+#endif
 
 	/*
 	 * Normalize after update_curr(); which will also have moved
@@ -4633,6 +4717,16 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
 	check_cfs_rq_runtime(cfs_rq);
 
 	check_spread(cfs_rq, prev);
+
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: compute lag while entity is still current (vruntime
+	 * is up to date). This persists the lag for the next
+	 * place_entity() call on enqueue.
+	 */
+	if (prev->on_rq)
+		update_entity_lag(cfs_rq, prev);
+#endif
 
 	if (prev->on_rq) {
 		update_stats_wait_start(cfs_rq, prev);
