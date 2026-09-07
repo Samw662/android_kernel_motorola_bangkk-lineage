@@ -927,7 +927,7 @@ static __maybe_unused u64 avg_vruntime(struct cfs_rq *cfs_rq)
  * EEVDF helper: update the entity's deadline based on its elapsed time.
  * When an entity has consumed its allocated slice, recalculate deadline.
  */
-static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
+static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
 	u64 deadline, slice;
 
@@ -937,16 +937,27 @@ static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	 */
 	slice = se->slice;
 	if (!slice)
-		return;
+		return false;
 
 	/*
-	 * If the entity's vruntime has passed its deadline, compute
-	 * the new deadline as vruntime + slice. This ensures the entity
-	 * gets a new scheduling window.
+	 * EEVDF: if vruntime has not reached the deadline, no update needed.
 	 */
-	deadline = se->vruntime + slice;
+	if ((s64)(se->deadline - se->vruntime) > 0)
+		return false;
+
+	/*
+	 * EEVDF: vd_i = ve_i + r_i / w_i
+	 * Compute the new virtual deadline based on the entity's slice
+	 * scaled by its weight (via calc_delta_fair).
+	 */
+	deadline = se->vruntime + calc_delta_fair(slice, se);
 	if ((s64)(deadline - se->deadline) > 0)
 		se->deadline = deadline;
+
+	/*
+	 * The task has consumed its request, reschedule.
+	 */
+	return true;
 }
 
 /*
@@ -1007,15 +1018,24 @@ static __maybe_unused void update_entity_lag(struct cfs_rq *cfs_rq,
 					     struct sched_entity *se)
 {
 	s64 lag = avg_vruntime(cfs_rq) - se->vruntime;
+	u64 limit;
 
 	/*
-	 * Clamp lag to prevent overflow. The upper bound is
-	 * sysctl_sched_latency (in vruntime units), the lower bound
-	 * is its negation. This ensures that even after long sleep,
-	 * the entity's lag doesn't cause it to dominate the runqueue.
+	 * EEVDF: clamp lag to double the entity's slice with a minimum
+	 * of TICK_NSEC (the timing granularity). This matches upstream:
+	 *
+	 *   -r_max < lag < max(r_max, q)
+	 *
+	 * where r_max is the entity's slice and q is the minimum
+	 * scheduling quantum. Using se->slice (not sysctl_sched_latency)
+	 * ensures the clamp scales per-entity based on its priority.
 	 */
-	lag = min(lag, (s64)sysctl_sched_latency);
-	lag = max(lag, -(s64)sysctl_sched_latency);
+	limit = calc_delta_fair(se->slice ? se->slice : TICK_NSEC, se);
+	if (limit < TICK_NSEC)
+		limit = TICK_NSEC;
+
+	lag = min(lag, (s64)limit);
+	lag = max(lag, -(s64)limit);
 
 	se->vlag = lag;
 }
@@ -4646,6 +4666,19 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 	struct sched_entity *se;
 	s64 delta;
 
+#ifdef CONFIG_SCHED_EEVDF
+	/*
+	 * EEVDF: when the entity has consumed its virtual deadline,
+	 * force reschedule. This replaces the CFS ideal_runtime check
+	 * with the EEVDF deadline-based check.
+	 */
+	if ((s64)(curr->deadline - curr->vruntime) <= 0) {
+		resched_curr(rq_of(cfs_rq));
+		clear_buddies(cfs_rq, curr);
+		return;
+	}
+#endif
+
 	ideal_runtime = sched_slice(cfs_rq, curr);
 	delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
 	if (delta_exec > ideal_runtime) {
@@ -4854,20 +4887,6 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
 	cfs_rq->curr = NULL;
 }
 
-#ifdef CONFIG_SCHED_EEVDF
-/*
- * EEVDF: if the current entity has consumed its virtual deadline,
- * force a reschedule so pick_next_entity() can select the entity
- * with the earliest deadline. Without this check, a task could
- * keep running past its deadline if no other task wakes up.
- */
-static void entity_tick_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *curr)
-{
-	if ((s64)(curr->deadline - curr->vruntime) <= 0)
-		resched_curr(rq_of(cfs_rq));
-}
-#endif
-
 static void
 entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 {
@@ -4901,10 +4920,6 @@ entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 
 	if (cfs_rq->nr_running > 1)
 		check_preempt_tick(cfs_rq, curr);
-
-#ifdef CONFIG_SCHED_EEVDF
-	entity_tick_eevdf(cfs_rq, curr);
-#endif
 }
 
 
