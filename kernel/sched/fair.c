@@ -61,6 +61,17 @@ static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
 enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
 
 /*
+ * Default base time slice (request size r_i) for SCHED_NORMAL/SCHED_BATCH:
+ *
+ * Under EEVDF this is the request size used to compute the virtual
+ * deadline; see update_deadline().
+ *
+ * (default: 0.70 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ */
+unsigned int sysctl_sched_base_slice			= 700000ULL;
+static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
+
+/*
  * Minimal preemption granularity for CPU-bound tasks:
  *
  * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
@@ -198,6 +209,7 @@ static void update_sysctl(void)
 	SET_SYSCTL(sched_min_granularity);
 	SET_SYSCTL(sched_latency);
 	SET_SYSCTL(sched_wakeup_granularity);
+	SET_SYSCTL(sched_base_slice);
 #undef SET_SYSCTL
 }
 
@@ -976,28 +988,22 @@ static __maybe_unused u64 entity_slice(struct sched_entity *se)
 	 * EEVDF latency-aware slicing: map task latency classification
 	 * to slice size, which directly determines the virtual deadline.
 	 *
-	 * - Low-latency tasks (interactive, binder, procfs-flagged):
-	 *   shortest slice → earliest deadline → scheduled first
-	 * - SCHED_BATCH tasks: longest slice → latest deadline →
-	 *   yields CPU to interactive tasks
-	 * - Default SCHED_NORMAL: fair share slice based on nr_running
+	 * Base slice is sysctl_sched_base_slice (default 700us), the
+	 * primary EEVDF tunable that determines the request size for
+	 * virtual deadline computation.
+	 *
+	 * - Low-latency tasks: minimum slice for earliest deadline
+	 * - SCHED_BATCH tasks: longest slice for latest deadline
+	 * - Default: base slice scaled by nr_running
 	 */
 	if (p && p->policy == SCHED_BATCH) {
-		/*
-		 * Batch tasks get a slice 4x the default, giving them
-		 * a later deadline and less scheduling urgency.
-		 */
-		slice = sysctl_sched_latency;
+		slice = sysctl_sched_base_slice * 4;
 	} else if (p && walt_low_latency_task(p)) {
-		/*
-		 * Low-latency tasks (WALT-classified interactive) get
-		 * the minimum possible slice for earliest deadline.
-		 */
 		slice = sysctl_sched_min_granularity;
 	} else if (nr_running >= sched_nr_latency) {
 		slice = sysctl_sched_min_granularity;
 	} else {
-		slice = div_u64((u64)sysctl_sched_latency, nr_running);
+		slice = sysctl_sched_base_slice;
 	}
 
 	return slice;
