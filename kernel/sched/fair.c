@@ -918,18 +918,20 @@ static __maybe_unused int entity_eligible(struct cfs_rq *cfs_rq, struct sched_en
  */
 static __maybe_unused void avg_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	s64 vruntime_diff = (s64)(se->vruntime - cfs_rq->min_vruntime);
+	unsigned long weight = scale_load_down(se->load.weight);
+	s64 key = entity_key(cfs_rq, se);
 
-	cfs_rq->weighted_vruntime_sum += vruntime_diff * se->load.weight;
-	cfs_rq->load_sum += se->load.weight;
+	cfs_rq->weighted_vruntime_sum += key * weight;
+	cfs_rq->load_sum += weight;
 }
 
 static __maybe_unused void avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	s64 vruntime_diff = (s64)(se->vruntime - cfs_rq->min_vruntime);
+	unsigned long weight = scale_load_down(se->load.weight);
+	s64 key = entity_key(cfs_rq, se);
 
-	cfs_rq->weighted_vruntime_sum -= vruntime_diff * se->load.weight;
-	cfs_rq->load_sum -= se->load.weight;
+	cfs_rq->weighted_vruntime_sum -= key * weight;
+	cfs_rq->load_sum -= weight;
 }
 
 static __maybe_unused void avg_vruntime_update(struct cfs_rq *cfs_rq)
@@ -4555,8 +4557,8 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	if ((flags & ENQUEUE_WAKEUP) && entity_is_task(se)) {
 		s64 vdiff = (s64)(se->vruntime - cfs_rq->min_vruntime);
-		cfs_rq->sleeping_vruntime_sum -= vdiff;
-		cfs_rq->sleeping_weight_sum -= se->load.weight;
+		cfs_rq->sleeping_vruntime_sum -= vdiff * scale_load_down(se->load.weight);
+		cfs_rq->sleeping_weight_sum -= scale_load_down(se->load.weight);
 	}
 	avg_vruntime_add(cfs_rq, se);
 #endif
@@ -4673,9 +4675,10 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * tasks to receive unfair scheduling priority.
 	 */
 	if ((flags & DEQUEUE_SLEEP) && entity_is_task(se)) {
+		unsigned long weight = scale_load_down(se->load.weight);
 		s64 vdiff = (s64)(se->vruntime - cfs_rq->min_vruntime);
-		cfs_rq->sleeping_vruntime_sum += vdiff;
-		cfs_rq->sleeping_weight_sum += se->load.weight;
+		cfs_rq->sleeping_vruntime_sum += vdiff * weight;
+		cfs_rq->sleeping_weight_sum += weight;
 	}
 	avg_vruntime_sub(cfs_rq, se);
 #endif
