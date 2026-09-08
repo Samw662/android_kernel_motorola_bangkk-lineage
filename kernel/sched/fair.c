@@ -4753,6 +4753,30 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	se->prev_sum_exec_runtime = se->sum_exec_runtime;
 }
 
+#ifdef CONFIG_SCHED_EEVDF
+static struct sched_entity *
+pick_eevdf(struct cfs_rq *cfs_rq)
+{
+	struct sched_entity *se, *best = NULL;
+	struct rb_node *node;
+	u64 avgvr = avg_vruntime(cfs_rq);
+
+	node = rb_first_cached(&cfs_rq->tasks_timeline);
+	while (node) {
+		se = rb_entry(node, struct sched_entity, run_node);
+
+		if ((s64)(se->vruntime - avgvr) <= 0) {
+			if (!best || (s64)(se->deadline - best->deadline) < 0)
+				best = se;
+		}
+
+		node = rb_next(node);
+	}
+
+	return best;
+}
+#endif
+
 static int
 wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se);
 
@@ -4780,49 +4804,21 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF: full rb-tree scan to find the eligible entity with the
-	 * earliest virtual deadline. This replaces the simplified
-	 * curr-vs-leftmost comparison with a proper EEVDF selection.
-	 *
-	 * An entity is eligible if its vruntime <= avg_vruntime (i.e.,
-	 * it hasn't consumed more than its fair share). Among eligible
-	 * entities, we pick the one with the earliest deadline.
-	 *
-	 * This is O(n) in the number of runnable entities, which is
-	 * acceptable for mobile workloads (typically 10-50 tasks).
+	 * EEVDF: pick the eligible entity with the earliest virtual
+	 * deadline via pick_eevdf(), then also consider curr which
+	 * is not kept in the rb-tree.
 	 */
-	{
-		struct rb_node *node;
-		struct sched_entity *best = se;
+	se = pick_eevdf(cfs_rq);
+	if (!se)
+		se = left;
+
+	if (curr && curr != se) {
 		u64 avgvr = avg_vruntime(cfs_rq);
 
-		/* Scan the rb-tree for the best eligible deadline */
-		node = rb_first_cached(&cfs_rq->tasks_timeline);
-		while (node) {
-			se = rb_entry(node, struct sched_entity, run_node);
-
-			/*
-			 * Check eligibility: vruntime <= avg_vruntime.
-			 * Only consider entities that haven't exceeded
-			 * their fair share of CPU time.
-			 */
-			if ((s64)(se->vruntime - avgvr) <= 0) {
-				if ((s64)(se->deadline - best->deadline) < 0)
-					best = se;
-			}
-
-			node = rb_next(node);
+		if ((s64)(curr->vruntime - avgvr) <= 0) {
+			if ((s64)(curr->deadline - se->deadline) < 0)
+				se = curr;
 		}
-
-		/* Also check curr as it's not in the rb-tree */
-		if (curr && curr != best) {
-			if ((s64)(curr->vruntime - avgvr) <= 0) {
-				if ((s64)(curr->deadline - best->deadline) < 0)
-					best = curr;
-			}
-		}
-
-		se = best;
 	}
 #endif
 
@@ -8102,13 +8098,13 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF preemption: if the waker entity has an earlier deadline
-	 * than the current entity, it should preempt immediately. This
-	 * replaces the vruntime-based comparison with a deadline-based
-	 * one, which is more responsive for latency-sensitive tasks.
+	 * EEVDF preemption: if the waker entity is the one that
+	 * pick_eevdf() would select, it should preempt immediately.
+	 * This ensures the woken task is strictly the best eligible
+	 * entity, not just one with an earlier deadline.
 	 */
-	if (entity_is_task(pse) && entity_is_task(se)) {
-		if ((s64)(pse->deadline - se->deadline) < 0) {
+	if (entity_is_task(pse)) {
+		if (pick_eevdf(cfs_rq_of(pse)) == pse) {
 			if (!next_buddy_marked)
 				set_next_buddy(pse);
 			goto preempt;
