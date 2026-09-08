@@ -68,8 +68,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  *
  * (default: 0.70 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
-unsigned int sysctl_sched_base_slice			= 700000ULL;
-static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
+unsigned int sysctl_sched_base_slice			= 750000ULL;
+static unsigned int normalized_sysctl_sched_base_slice	= 750000ULL;
 
 /*
  * Minimal preemption granularity for CPU-bound tasks:
@@ -559,11 +559,12 @@ static inline u64 min_vruntime(u64 min_vruntime, u64 vruntime)
 static inline int entity_before(struct sched_entity *a,
 				struct sched_entity *b)
 {
-#ifdef CONFIG_SCHED_EEVDF
-	return (s64)(a->deadline - b->deadline) < 0;
-#else
 	return (s64)(a->vruntime - b->vruntime) < 0;
-#endif
+}
+
+static inline s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	return (s64)(se->vruntime - cfs_rq->min_vruntime);
 }
 
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
@@ -871,11 +872,26 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq, int force)
 /*
  * EEVDF helper: compute the entity's eligible time.
  * A task is eligible if its vruntime <= cfs_rq->avg_vruntime.
- * Returns the eligible time (the vruntime at which the entity becomes eligible).
+ * Returns 1 if eligible, 0 otherwise.
  */
-static __maybe_unused s64 entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
+static __maybe_unused int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	return (s64)(se->vruntime - cfs_rq->avg_vruntime);
+	struct sched_entity *curr = cfs_rq->curr;
+	s64 avg = cfs_rq->avg_vruntime;
+	u64 load = cfs_rq->avg_load;
+
+	/*
+	 * The currently running entity is NOT in the rb-tree and
+	 * therefore NOT accounted in avg_vruntime. Add its contribution
+	 * inline to get an accurate weighted average.
+	 */
+	if (curr && curr->on_rq) {
+		unsigned long weight = scale_load_down(curr->load.weight);
+		avg += entity_key(cfs_rq, curr) * weight;
+		load += weight;
+	}
+
+	return avg >= entity_key(cfs_rq, se) * (s64)load;
 }
 
 /*
@@ -920,7 +936,7 @@ static __maybe_unused void avg_vruntime_update(struct cfs_rq *cfs_rq)
  * This is the reference point for lag computation — a task with
  * vruntime == avg_vruntime has zero lag (perfectly fair).
  */
-static __maybe_unused u64 avg_vruntime(struct cfs_rq *cfs_rq)
+static __maybe_unused s64 avg_vruntime(struct cfs_rq *cfs_rq)
 {
 	s64 vruntime_sum = cfs_rq->weighted_vruntime_sum;
 	u32 total_weight = cfs_rq->load_sum;
@@ -939,6 +955,8 @@ static __maybe_unused u64 avg_vruntime(struct cfs_rq *cfs_rq)
 		return cfs_rq->min_vruntime + div_s64(vruntime_sum, total_weight);
 	return cfs_rq->min_vruntime;
 }
+
+static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
 
 /*
  * EEVDF helper: update the entity's deadline based on its elapsed time.
@@ -972,7 +990,10 @@ static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		se->deadline = deadline;
 
 	/*
-	 * The task has consumed its request, reschedule.
+	 * The task has consumed its request. Return true so the caller
+	 * (check_preempt_tick) can decide whether to reschedule.
+	 * Do not force resched here to avoid livelock during boot
+	 * when many runnable tasks compete for CPU time.
 	 */
 	return true;
 }
@@ -1029,7 +1050,9 @@ static __maybe_unused void update_entity_lag(struct cfs_rq *cfs_rq,
 					     struct sched_entity *se)
 {
 	s64 lag = avg_vruntime(cfs_rq) - se->vruntime;
-	u64 limit;
+	s64 limit;
+
+	SCHED_WARN_ON(!se->on_rq);
 
 	/*
 	 * EEVDF: clamp lag to double the entity's slice with a minimum
@@ -1037,16 +1060,12 @@ static __maybe_unused void update_entity_lag(struct cfs_rq *cfs_rq,
 	 *
 	 *   -r_max < lag < max(r_max, q)
 	 *
-	 * where r_max is the entity's slice and q is the minimum
-	 * scheduling quantum. Using se->slice (not sysctl_sched_latency)
-	 * ensures the clamp scales per-entity based on its priority.
+	 * where r_max is 2 * se->slice and q is the minimum
+	 * scheduling quantum.
 	 */
-	limit = calc_delta_fair(se->slice ? se->slice : TICK_NSEC, se);
-	if (limit < TICK_NSEC)
-		limit = TICK_NSEC;
+	limit = calc_delta_fair(max_t(u64, 2 * se->slice, TICK_NSEC), se);
 
-	lag = min(lag, (s64)limit);
-	lag = max(lag, -(s64)limit);
+	lag = clamp(lag, -limit, limit);
 
 	se->vlag = lag;
 }
@@ -4341,7 +4360,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 		 * should be placed ahead of avg_vruntime. A negative vlag
 		 * means it exceeded its share, so place it behind.
 		 */
-		u64 avgvr = avg_vruntime(cfs_rq);
+		s64 avgvr = avg_vruntime(cfs_rq);
 
 		if (se->vlag > 0)
 			vruntime = avgvr - se->vlag;
@@ -4759,7 +4778,7 @@ pick_eevdf(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *se, *best = NULL;
 	struct rb_node *node;
-	u64 avgvr = avg_vruntime(cfs_rq);
+	s64 avgvr = avg_vruntime(cfs_rq);
 
 	node = rb_first_cached(&cfs_rq->tasks_timeline);
 	while (node) {
@@ -4813,7 +4832,7 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		se = left;
 
 	if (curr && curr != se) {
-		u64 avgvr = avg_vruntime(cfs_rq);
+		s64 avgvr = avg_vruntime(cfs_rq);
 
 		if ((s64)(curr->vruntime - avgvr) <= 0) {
 			if ((s64)(curr->deadline - se->deadline) < 0)
@@ -8102,13 +8121,12 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF preemption: if the waker entity is the one that
-	 * pick_eevdf() would select, it should preempt immediately.
-	 * This ensures the woken task is strictly the best eligible
-	 * entity, not just one with an earlier deadline.
+	 * EEVDF preemption: if the woken entity is the one that
+	 * pick_eevdf() would select on the current runqueue,
+	 * it should preempt immediately.
 	 */
 	if (entity_is_task(pse)) {
-		if (pick_eevdf(cfs_rq_of(pse)) == pse) {
+		if (pick_eevdf(cfs_rq_of(se)) == pse) {
 			if (!next_buddy_marked)
 				set_next_buddy(pse);
 			goto preempt;
