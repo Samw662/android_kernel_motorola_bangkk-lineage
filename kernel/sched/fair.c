@@ -66,7 +66,7 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * Under EEVDF this is the request size used to compute the virtual
  * deadline; see update_deadline().
  *
- * (default: 0.70 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 0.75 msec, units: nanoseconds)
  */
 unsigned int sysctl_sched_base_slice			= 750000ULL;
 static unsigned int normalized_sysctl_sched_base_slice	= 750000ULL;
@@ -870,28 +870,46 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq, int force)
 #ifdef CONFIG_SCHED_EEVDF
 
 /*
- * EEVDF helper: compute the entity's eligible time.
- * A task is eligible if its vruntime <= cfs_rq->avg_vruntime.
- * Returns 1 if eligible, 0 otherwise.
+ * EEVDF helper: determine if an entity is eligible for scheduling.
+ *
+ * An entity is eligible when it has received less than its fair share
+ * of CPU time, i.e. lag >= 0, which is equivalent to V >= v_i where V
+ * is the virtual time of the system and v_i is the entity's vruntime.
+ *
+ * To avoid precision loss from dividing the weighted average, we use
+ * cross-wise multiplication (matching upstream Linux 6.6):
+ *
+ *   V >= v_i  <=>  sum(v_j - v0)*w_j  >=  (v_i - v0) * sum(w_j)
+ *
+ * Where:
+ *   v0 = cfs_rq->min_vruntime
+ *   Left side  = weighted_vruntime_sum + sleeping_vruntime_sum + curr contribution
+ *   Right side = entity_key(se) * (load_sum + sleeping_weight_sum + curr weight)
+ *
+ * The currently running entity (curr) is NOT in the rb-tree and therefore
+ * NOT accounted in the sums. Add its contribution inline.
  */
 static __maybe_unused int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
 	struct sched_entity *curr = cfs_rq->curr;
-	s64 avg = cfs_rq->avg_vruntime;
-	u64 load = cfs_rq->avg_load;
+	s64 avg = cfs_rq->weighted_vruntime_sum;
+	long load = cfs_rq->load_sum;
 
-	/*
-	 * The currently running entity is NOT in the rb-tree and
-	 * therefore NOT accounted in avg_vruntime. Add its contribution
-	 * inline to get an accurate weighted average.
-	 */
+	/* Include sleeping entities in the weighted average */
+	if (cfs_rq->sleeping_weight_sum) {
+		avg += cfs_rq->sleeping_vruntime_sum;
+		load += cfs_rq->sleeping_weight_sum;
+	}
+
+	/* Include the currently running entity (not in the rb-tree) */
 	if (curr && curr->on_rq) {
 		unsigned long weight = scale_load_down(curr->load.weight);
 		avg += entity_key(cfs_rq, curr) * weight;
 		load += weight;
 	}
 
-	return avg >= entity_key(cfs_rq, se) * (s64)load;
+	/* Cross-multiply to avoid division: avg/load >= entity_key(se) */
+	return avg >= entity_key(cfs_rq, se) * load;
 }
 
 /*
