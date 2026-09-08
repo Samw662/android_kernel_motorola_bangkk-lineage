@@ -934,46 +934,46 @@ static __maybe_unused void avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_
 	cfs_rq->load_sum -= weight;
 }
 
-static __maybe_unused void avg_vruntime_update(struct cfs_rq *cfs_rq)
-{
-	s64 vruntime_sum = cfs_rq->weighted_vruntime_sum;
-	u32 total_weight = cfs_rq->load_sum;
-
-	if (cfs_rq->sleeping_weight_sum) {
-		vruntime_sum += cfs_rq->sleeping_vruntime_sum;
-		total_weight += cfs_rq->sleeping_weight_sum;
-	}
-
-	if (total_weight)
-		cfs_rq->avg_vruntime = cfs_rq->min_vruntime +
-			div_s64(vruntime_sum, total_weight);
-	else
-		cfs_rq->avg_vruntime = cfs_rq->min_vruntime;
-}
-
 /*
  * EEVDF helper: compute the weighted average vruntime of the cfs_rq.
- * This is the reference point for lag computation — a task with
+ * This is the reference point for lag computation -- a task with
  * vruntime == avg_vruntime has zero lag (perfectly fair).
+ *
+ * The result must have a left bias: avg_vruntime() + 0 must result in
+ * entity_eligible() := true. This is ensured by the floor/ceil rounding
+ * in the division.
+ *
+ * The currently running entity (curr) is NOT in the rb-tree and
+ * therefore NOT in the weighted sums. Add its contribution inline
+ * to get an accurate weighted average, matching upstream Linux 6.6.
  */
 static __maybe_unused s64 avg_vruntime(struct cfs_rq *cfs_rq)
 {
-	s64 vruntime_sum = cfs_rq->weighted_vruntime_sum;
-	u32 total_weight = cfs_rq->load_sum;
+	struct sched_entity *curr = cfs_rq->curr;
+	s64 avg = cfs_rq->weighted_vruntime_sum;
+	long load = cfs_rq->load_sum;
 
-	/*
-	 * Include sleeping entities in the average. Their vruntime
-	 * contribution is tracked separately because they are removed
-	 * from the rb-tree but should still count for eligibility.
-	 */
+	/* Include sleeping entities in the average */
 	if (cfs_rq->sleeping_weight_sum) {
-		vruntime_sum += cfs_rq->sleeping_vruntime_sum;
-		total_weight += cfs_rq->sleeping_weight_sum;
+		avg += cfs_rq->sleeping_vruntime_sum;
+		load += cfs_rq->sleeping_weight_sum;
 	}
 
-	if (total_weight)
-		return cfs_rq->min_vruntime + div_s64(vruntime_sum, total_weight);
-	return cfs_rq->min_vruntime;
+	/* Include the currently running entity (not in the rb-tree) */
+	if (curr && curr->on_rq) {
+		unsigned long weight = scale_load_down(curr->load.weight);
+		avg += entity_key(cfs_rq, curr) * weight;
+		load += weight;
+	}
+
+	if (load) {
+		/* sign flips effective floor / ceil */
+		if (avg < 0)
+			avg -= (load - 1);
+		avg = div_s64(avg, load);
+	}
+
+	return cfs_rq->min_vruntime + avg;
 }
 
 static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
