@@ -559,7 +559,11 @@ static inline u64 min_vruntime(u64 min_vruntime, u64 vruntime)
 static inline int entity_before(struct sched_entity *a,
 				struct sched_entity *b)
 {
+#ifdef CONFIG_SCHED_EEVDF
+	return (s64)(a->deadline - b->deadline) < 0;
+#else
 	return (s64)(a->vruntime - b->vruntime) < 0;
+#endif
 }
 
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
