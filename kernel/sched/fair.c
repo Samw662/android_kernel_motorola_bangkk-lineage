@@ -5792,9 +5792,13 @@ static void hrtick_start_fair(struct rq *rq, struct task_struct *p)
 	SCHED_WARN_ON(task_rq(p) != rq);
 
 	if (rq->cfs.h_nr_running > 1) {
+#ifdef CONFIG_SCHED_EEVDF
+		s64 delta = (s64)(se->deadline - se->vruntime);
+#else
 		u64 slice = sched_slice(cfs_rq, se);
 		u64 ran = se->sum_exec_runtime - se->prev_sum_exec_runtime;
 		s64 delta = slice - ran;
+#endif
 
 		if (delta < 0) {
 			if (rq->curr == p)
