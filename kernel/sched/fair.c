@@ -1049,14 +1049,6 @@ static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	 * EEVDF: vd_i = ve_i + r_i / w_i
 	 */
 	se->deadline = se->vruntime + calc_delta_fair(slice, se);
-
-	/*
-	 * The task has consumed its request, reschedule.
-	 */
-	if (cfs_rq->nr_running > 1) {
-		resched_curr(rq_of(cfs_rq));
-		clear_buddies(cfs_rq, se);
-	}
 }
 
 /*
@@ -4806,6 +4798,9 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		return;
 
 	se = __pick_first_entity(cfs_rq);
+	if (!se)
+		return;
+
 	delta = curr->vruntime - se->vruntime;
 
 	if (delta < 0)
@@ -4967,14 +4962,8 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *se = __pick_eevdf(cfs_rq);
 
-	if (!se) {
-		struct sched_entity *left = __pick_first_entity(cfs_rq);
-
-		if (left) {
-			pr_err("EEVDF: picking leftmost as fallback\n");
-			return left;
-		}
-	}
+	if (!se)
+		se = __pick_first_entity(cfs_rq);
 
 	return se;
 }
