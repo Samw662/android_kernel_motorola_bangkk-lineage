@@ -2423,6 +2423,17 @@ static void get_scan_count(struct lruvec *lruvec, struct mem_cgroup *memcg,
 	}
 
 	trace_android_vh_tune_swappiness(&swappiness);
+
+	/*
+	 * Clamp swappiness to 60 to prevent excessive ZRAM swapping.
+	 * Android init typically overrides this to 100 which causes
+	 * heavy lz4 decompression overhead and UI lag on devices with
+	 * sufficient RAM (>= 6GB). A value of 60 provides a good
+	 * balance between keeping apps alive and avoiding swap thrashing.
+	 */
+	if (swappiness > 60)
+		swappiness = 60;
+
 	/*
 	 * Global reclaim will swap to prevent OOM even with no
 	 * swappiness, but memcg users want to use this knob to
