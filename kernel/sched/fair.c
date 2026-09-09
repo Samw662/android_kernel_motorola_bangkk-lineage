@@ -67,10 +67,10 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * Under EEVDF this is the request size used to compute the virtual
  * deadline; see update_deadline().
  *
- * (default: 0.75 msec, units: nanoseconds)
+ * (default: 3 msec, units: nanoseconds)
  */
-unsigned int sysctl_sched_base_slice			= 750000ULL;
-static unsigned int normalized_sysctl_sched_base_slice	= 750000ULL;
+unsigned int sysctl_sched_base_slice			= 3000000ULL;
+static unsigned int normalized_sysctl_sched_base_slice	= 3000000ULL;
 
 /*
  * Minimal preemption granularity for CPU-bound tasks:
@@ -1073,7 +1073,7 @@ static __maybe_unused u64 entity_slice(struct sched_entity *se)
 	 * EEVDF latency-aware slicing: map task latency classification
 	 * to slice size, which directly determines the virtual deadline.
 	 *
-	 * Base slice is sysctl_sched_base_slice (default 700us), the
+	 * Base slice is sysctl_sched_base_slice (default 3ms), the
 	 * primary EEVDF tunable that determines the request size for
 	 * virtual deadline computation.
 	 *
