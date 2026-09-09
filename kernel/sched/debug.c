@@ -386,6 +386,13 @@ static void print_cfs_group_stats(struct seq_file *m, int cpu, struct task_group
 	PN(se->vruntime);
 	PN(se->sum_exec_runtime);
 
+#ifdef CONFIG_SCHED_EEVDF
+	PN(se->deadline);
+	PN(se->min_deadline);
+	PN(se->slice);
+	P(se->vlag);
+#endif
+
 	if (schedstat_enabled()) {
 		PN_SCHEDSTAT(se->statistics.wait_start);
 		PN_SCHEDSTAT(se->statistics.sleep_start);
@@ -542,6 +549,16 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 			cfs_rq->nr_spread_over);
 	SEQ_printf(m, "  .%-30s: %d\n", "nr_running", cfs_rq->nr_running);
 	SEQ_printf(m, "  .%-30s: %ld\n", "load", cfs_rq->load.weight);
+#ifdef CONFIG_SCHED_EEVDF
+	SEQ_printf(m, "  .%-30s: %Ld\n", "weighted_vruntime_sum",
+			cfs_rq->weighted_vruntime_sum);
+	SEQ_printf(m, "  .%-30s: %ld\n", "load_sum",
+			cfs_rq->load_sum);
+	SEQ_printf(m, "  .%-30s: %Ld\n", "sleeping_vruntime_sum",
+			cfs_rq->sleeping_vruntime_sum);
+	SEQ_printf(m, "  .%-30s: %ld\n", "sleeping_weight_sum",
+			cfs_rq->sleeping_weight_sum);
+#endif
 #ifdef CONFIG_SMP
 	SEQ_printf(m, "  .%-30s: %ld\n", "runnable_weight", cfs_rq->runnable_weight);
 	SEQ_printf(m, "  .%-30s: %lu\n", "load_avg",
@@ -899,6 +916,13 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
 	PN(se.exec_start);
 	PN(se.vruntime);
 	PN(se.sum_exec_runtime);
+
+#ifdef CONFIG_SCHED_EEVDF
+	PN(se.deadline);
+	PN(se.min_deadline);
+	PN(se.slice);
+	P(se.vlag);
+#endif
 
 	nr_switches = p->nvcsw + p->nivcsw;
 
