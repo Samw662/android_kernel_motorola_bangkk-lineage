@@ -24,6 +24,7 @@
 
 #include <trace/events/sched.h>
 #include <trace/hooks/sched.h>
+#include <linux/rbtree_augmented.h>
 
 #include "walt/walt.h"
 
@@ -567,6 +568,9 @@ static inline s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	return (s64)(se->vruntime - cfs_rq->min_vruntime);
 }
 
+#define __node_2_se(node) \
+	rb_entry((node), struct sched_entity, run_node)
+
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *curr = cfs_rq->curr;
@@ -600,41 +604,80 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 }
 
 /*
+ * RB-tree augmentation for EEVDF: maintain the minimum deadline in each
+ * subtree so that __pick_eevdf() can locate the earliest-deadline eligible
+ * entity in O(log n) time instead of O(n) linear scan.
+ *
+ * The tree remains ordered by vruntime (service time). The augmentation
+ * stores, in each node, the minimum deadline found in its subtree.
+ */
+
+static inline bool __entity_less(struct rb_node *a, const struct rb_node *b)
+{
+	return entity_before(__node_2_se(a), __node_2_se(b));
+}
+
+#define deadline_gt(field, lse, rse) \
+	({ (s64)((lse)->field - (rse)->field) > 0; })
+
+static inline void __update_min_deadline(struct sched_entity *se,
+					 struct rb_node *node)
+{
+	if (node) {
+		struct sched_entity *rse = __node_2_se(node);
+
+		if (deadline_gt(min_deadline, se, rse))
+			se->min_deadline = rse->min_deadline;
+	}
+}
+
+/*
+ * se->min_deadline = min(se->deadline, se->left->min_deadline,
+ *                             se->right->min_deadline)
+ *
+ * Returns true if min_deadline unchanged (no rebalance needed by caller).
+ */
+static inline bool min_deadline_update(struct sched_entity *se, bool exit)
+{
+	u64 old_min_deadline = se->min_deadline;
+	struct rb_node *node = &se->run_node;
+
+	se->min_deadline = se->deadline;
+	__update_min_deadline(se, node->rb_right);
+	__update_min_deadline(se, node->rb_left);
+
+	return se->min_deadline == old_min_deadline;
+}
+
+RB_DECLARE_CALLBACKS(static, min_deadline_cb, struct sched_entity,
+		     run_node, min_deadline, min_deadline_update);
+
+/*
  * Enqueue an entity into the rb-tree:
+ */
+static void avg_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se);
+static void avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_entity *se);
+
+/*
+ * Enqueue an entity into the rb-tree (augmented with min_deadline).
+ *
+ * Uses rb_add_augmented_cached() which handles the BST walk, rb_link_node,
+ * augmented data propagation, and insertion with rotation callbacks — all
+ * in the correct order (propagation BEFORE rotations).
  */
 static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	struct rb_node **link = &cfs_rq->tasks_timeline.rb_root.rb_node;
-	struct rb_node *parent = NULL;
-	struct sched_entity *entry;
-	bool leftmost = true;
-
-	/*
-	 * Find the right place in the rbtree:
-	 */
-	while (*link) {
-		parent = *link;
-		entry = rb_entry(parent, struct sched_entity, run_node);
-		/*
-		 * We dont care about collisions. Nodes with
-		 * the same key stay together.
-		 */
-		if (entity_before(se, entry)) {
-			link = &parent->rb_left;
-		} else {
-			link = &parent->rb_right;
-			leftmost = false;
-		}
-	}
-
-	rb_link_node(&se->run_node, parent, link);
-	rb_insert_color_cached(&se->run_node,
-			       &cfs_rq->tasks_timeline, leftmost);
+	avg_vruntime_add(cfs_rq, se);
+	se->min_deadline = se->deadline;
+	rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+				__entity_less, &min_deadline_cb);
 }
 
 static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	rb_erase_cached(&se->run_node, &cfs_rq->tasks_timeline);
+	rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+				  &min_deadline_cb);
+	avg_vruntime_sub(cfs_rq, se);
 }
 
 struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
@@ -981,41 +1024,39 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
 /*
  * EEVDF helper: update the entity's deadline based on its elapsed time.
  * When an entity has consumed its allocated slice, recalculate deadline.
+ *
+ * Matches upstream Linux 6.6 behavior: always resets slice to base_slice,
+ * forces reschedule when multiple tasks compete, and clears buddies.
  */
-static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
+static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	u64 deadline, slice;
-
-	/*
-	 * Only update deadline for entities that have a valid slice.
-	 * New entities without a slice use the default deadline.
-	 */
-	slice = se->slice;
-	if (!slice)
-		return false;
+	u64 slice;
 
 	/*
 	 * EEVDF: if vruntime has not reached the deadline, no update needed.
 	 */
-	if ((s64)(se->deadline - se->vruntime) > 0)
-		return false;
+	if ((s64)(se->vruntime - se->deadline) < 0)
+		return;
+
+	/*
+	 * For EEVDF the virtual time slope is determined by w_i (iow.
+	 * nice) while the request time r_i is determined by
+	 * sysctl_sched_base_slice.
+	 */
+	slice = sysctl_sched_base_slice;
 
 	/*
 	 * EEVDF: vd_i = ve_i + r_i / w_i
-	 * Compute the new virtual deadline based on the entity's slice
-	 * scaled by its weight (via calc_delta_fair).
 	 */
-	deadline = se->vruntime + calc_delta_fair(slice, se);
-	if ((s64)(deadline - se->deadline) > 0)
-		se->deadline = deadline;
+	se->deadline = se->vruntime + calc_delta_fair(slice, se);
 
 	/*
-	 * The task has consumed its request. Return true so the caller
-	 * (check_preempt_tick) can decide whether to reschedule.
-	 * Do not force resched here to avoid livelock during boot
-	 * when many runnable tasks compete for CPU time.
+	 * The task has consumed its request, reschedule.
 	 */
-	return true;
+	if (cfs_rq->nr_running > 1) {
+		resched_curr(rq_of(cfs_rq));
+		clear_buddies(cfs_rq, se);
+	}
 }
 
 /*
@@ -4372,13 +4413,16 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 		vruntime += sched_vslice(cfs_rq, se);
 
 #ifdef CONFIG_SCHED_EEVDF
-	if (!initial && se->vlag) {
+	if (!initial && se->vlag && sched_feat(PLACE_LAG)) {
 		/*
 		 * EEVDF lag-based placement: restore the entity's position
 		 * relative to avg_vruntime using its persisted lag. A
 		 * positive vlag means the entity was owed CPU time, so it
 		 * should be placed ahead of avg_vruntime. A negative vlag
 		 * means it exceeded its share, so place it behind.
+		 *
+		 * When PLACE_LAG is disabled, fall through to the CFS
+		 * GENTLE_FAIR_SLEEPERS placement below.
 		 */
 		s64 avgvr = avg_vruntime(cfs_rq);
 
@@ -4444,10 +4488,17 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	 * EEVDF: compute the entity's slice and deadline from the
 	 * (possibly boosted) vruntime. The WALT boosts above moved
 	 * vruntime backwards, which naturally makes deadline earlier
-	 * — equivalent to CFS's vruntime boost but in EEVDF's model.
+	 * equivalent to CFS's vruntime boost but in EEVDF's model.
+	 *
+	 * For initial placement (fork), PLACE_DEADLINE_INITIAL gives
+	 * the task a half-slice deadline so it gets a chance to run
+	 * quickly without dominating the runqueue.
 	 */
 	se->slice = entity_slice(se);
-	se->deadline = se->vruntime + se->slice;
+	if (initial && sched_feat(PLACE_DEADLINE_INITIAL))
+		se->deadline = se->vruntime + se->slice / 2;
+	else
+		se->deadline = se->vruntime + se->slice;
 #endif
 }
 
@@ -4560,7 +4611,6 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		cfs_rq->sleeping_vruntime_sum -= vdiff * scale_load_down(se->load.weight);
 		cfs_rq->sleeping_weight_sum -= scale_load_down(se->load.weight);
 	}
-	avg_vruntime_add(cfs_rq, se);
 #endif
 
 	check_schedstat_required();
@@ -4680,7 +4730,12 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		cfs_rq->sleeping_vruntime_sum += vdiff * weight;
 		cfs_rq->sleeping_weight_sum += weight;
 	}
-	avg_vruntime_sub(cfs_rq, se);
+	/*
+	 * avg_vruntime_sub() is now called from __dequeue_entity(),
+	 * which only runs when se != cfs_rq->curr. This is correct because
+	 * curr is never in the rb-tree and therefore was never added to
+	 * the avg_vruntime accumulator.
+	 */
 #endif
 
 	/*
@@ -4794,26 +4849,134 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 #ifdef CONFIG_SCHED_EEVDF
-static struct sched_entity *
-pick_eevdf(struct cfs_rq *cfs_rq)
+/*
+ * Earliest Eligible Virtual Deadline First
+ *
+ * In order to provide latency guarantees for different request sizes
+ * EEVDF selects the best runnable task from two criteria:
+ *
+ *  1) the task must be eligible (must be owed service)
+ *  2) from those tasks that meet 1), we select the one
+ *     with the earliest virtual deadline.
+ *
+ * We can do this in O(log n) time due to an augmented RB-tree. The
+ * tree keeps the entries sorted on service, but also functions as a
+ * heap based on the deadline by keeping:
+ *  se->min_deadline = min(se->deadline, se->{left,right}->min_deadline)
+ */
+static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
 {
-	struct sched_entity *se, *best = NULL;
-	struct rb_node *node;
-	s64 avgvr = avg_vruntime(cfs_rq);
+	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
+	struct sched_entity *curr = cfs_rq->curr;
+	struct sched_entity *best = NULL;
+	struct sched_entity *best_left = NULL;
 
-	node = rb_first_cached(&cfs_rq->tasks_timeline);
+	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
+		curr = NULL;
+	best = curr;
+
+	/*
+	 * Once selected, run a task until it either becomes non-eligible or
+	 * until it gets a new slice. See the RUN_TO_PARITY sched_feat.
+	 */
+	if (sched_feat(RUN_TO_PARITY) && curr && curr->vlag == curr->deadline)
+		return curr;
+
 	while (node) {
-		se = rb_entry(node, struct sched_entity, run_node);
+		struct sched_entity *se = __node_2_se(node);
 
-		if ((s64)(se->vruntime - avgvr) <= 0) {
-			if (!best || (s64)(se->deadline - best->deadline) < 0)
-				best = se;
+		/*
+		 * If this entity is not eligible, try the left subtree.
+		 * All entities in a left subtree have higher vruntime
+		 * and are therefore more likely to be eligible.
+		 */
+		if (!entity_eligible(cfs_rq, se)) {
+			node = node->rb_left;
+			continue;
 		}
 
-		node = rb_next(node);
+		/*
+		 * Now we heap search eligible trees for the best
+		 * (minimum) deadline.
+		 */
+		if (!best || deadline_gt(deadline, best, se))
+			best = se;
+
+		/*
+		 * Every se in a left branch is eligible, keep track of
+		 * the branch with the best min_deadline.
+		 */
+		if (node->rb_left) {
+			struct sched_entity *left = __node_2_se(node->rb_left);
+
+			if (!best_left || deadline_gt(min_deadline, best_left, left))
+				best_left = left;
+
+			/*
+			 * min_deadline is in the left branch. rb_left and
+			 * all descendants are eligible, so immediately
+			 * switch to the second loop.
+			 */
+			if (left->min_deadline == se->min_deadline)
+				break;
+		}
+
+		/* min_deadline is at this node, no need to look right */
+		if (se->deadline == se->min_deadline)
+			break;
+
+		/* else min_deadline is in the right branch */
+		node = node->rb_right;
 	}
 
-	return best;
+	/*
+	 * We ran into an eligible node which is itself the best.
+	 * (Or nr_running == 0 and both are NULL)
+	 */
+	if (!best_left ||
+	    (s64)(best_left->min_deadline - best->deadline) > 0)
+		return best;
+
+	/*
+	 * Now best_left and all of its children are eligible, and we are
+	 * just looking for deadline == min_deadline.
+	 */
+	node = &best_left->run_node;
+	while (node) {
+		struct sched_entity *se = __node_2_se(node);
+
+		/* min_deadline is the current node */
+		if (se->deadline == se->min_deadline)
+			return se;
+
+		/* min_deadline is in the left branch */
+		if (node->rb_left &&
+		    __node_2_se(node->rb_left)->min_deadline == se->min_deadline) {
+			node = node->rb_left;
+			continue;
+		}
+
+		/* else min_deadline is in the right branch */
+		node = node->rb_right;
+	}
+
+	return NULL;
+}
+
+static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
+{
+	struct sched_entity *se = __pick_eevdf(cfs_rq);
+
+	if (!se) {
+		struct sched_entity *left = __pick_first_entity(cfs_rq);
+
+		if (left) {
+			pr_err("EEVDF: picking leftmost as fallback\n");
+			return left;
+		}
+	}
+
+	return se;
 }
 #endif
 
