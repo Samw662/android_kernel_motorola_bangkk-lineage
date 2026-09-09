@@ -59,7 +59,7 @@ static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
  *
  * (default SCHED_TUNABLESCALING_LOG = *(1+ilog(ncpus))
  */
-enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
+enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
 
 /*
  * Default base time slice (request size r_i) for SCHED_NORMAL/SCHED_BATCH:
@@ -1029,8 +1029,8 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
  * EEVDF helper: update the entity's deadline based on its elapsed time.
  * When an entity has consumed its allocated slice, recalculate deadline.
  *
- * Matches upstream Linux 6.6 behavior: always resets slice to base_slice,
- * forces reschedule when multiple tasks compete, and clears buddies.
+ * Always resets slice to sysctl_sched_base_slice, forces reschedule
+ * when multiple tasks compete, and clears buddies.
  */
 static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
