@@ -816,16 +816,19 @@ static int sec_nfc_suspend(struct device *dev)
 
     mutex_lock(&info->mutex);
 
-    if (info->mode == SEC_NFC_MODE_BOOTLOADER)
+    if (info->mode == SEC_NFC_MODE_BOOTLOADER) {
         ret = -EPERM;
+        goto out;
+    }
 
     value = gpio_get_value(pdata->wake);
-    if(value > 0){
-	pr_info("%s: hal is still active, block suspend.\n", __func__);
-	ret = -EPERM;
+    if (value > 0) {
+        pr_warn("%s: NFC wake GPIO high during suspend, allowing suspend anyway\n",
+                __func__);
     }
-    mutex_unlock(&info->mutex);
 
+out:
+    mutex_unlock(&info->mutex);
     return ret;
 }
 
