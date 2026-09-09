@@ -5986,8 +5986,15 @@ static int dwc3_msm_pm_suspend(struct device *dev)
 	 */
 	if (!dwc->ignore_wakeup_src_in_hostmode || !mdwc->in_host_mode) {
 		if (!atomic_read(&dwc->in_lpm)) {
-			dev_err(mdwc->dev, "Abort PM suspend!! (USB is outside LPM)\n");
-			return -EBUSY;
+			int retry_ret;
+
+			dev_dbg(mdwc->dev, "USB outside LPM, attempting forced LPM\n");
+			retry_ret = pm_runtime_put_sync_suspend(mdwc->dev);
+			if (retry_ret < 0 || !atomic_read(&dwc->in_lpm)) {
+				dev_warn(mdwc->dev,
+					"USB forced LPM failed (%d), allowing suspend anyway\n",
+					retry_ret);
+			}
 		}
 
 		atomic_set(&mdwc->pm_suspended, 1);
