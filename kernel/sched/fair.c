@@ -1024,13 +1024,15 @@ static __maybe_unused s64 avg_vruntime(struct cfs_rq *cfs_rq)
 }
 
 static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
+static __maybe_unused u64 entity_slice(struct sched_entity *se);
 
 /*
  * EEVDF helper: update the entity's deadline based on its elapsed time.
  * When an entity has consumed its allocated slice, recalculate deadline.
  *
- * Always resets slice to sysctl_sched_base_slice, forces reschedule
- * when multiple tasks compete, and clears buddies.
+ * Always recalculates slice via entity_slice() (which respects latency_nice,
+ * policy, and load), forces reschedule when multiple tasks compete,
+ * and clears buddies.
  */
 static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
@@ -1042,10 +1044,10 @@ static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 	/*
 	 * For EEVDF the virtual time slope is determined by w_i (iow.
-	 * nice) while the request time r_i is determined by
-	 * sysctl_sched_base_slice.
+	 * nice) while the request time r_i is determined by entity_slice(),
+	 * which incorporates latency_nice, policy, and load.
 	 */
-	se->slice = sysctl_sched_base_slice;
+	se->slice = entity_slice(se);
 
 	/*
 	 * EEVDF: vd_i = ve_i + r_i / w_i
@@ -1069,9 +1071,18 @@ static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 static __maybe_unused u64 entity_slice(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
-	struct task_struct *p = task_of(se);
+	struct task_struct *p;
 	int nr_running = cfs_rq->nr_running;
 	u64 slice;
+
+	/*
+	 * Group entities (cfs_rq of cgroups) do not carry latency_nice.
+	 * Return base slice safely without touching task_struct.
+	 */
+	if (!entity_is_task(se))
+		return sysctl_sched_base_slice;
+
+	p = task_of(se);
 
 	/*
 	 * EEVDF latency-aware slicing: map task latency classification
@@ -1086,7 +1097,7 @@ static __maybe_unused u64 entity_slice(struct sched_entity *se)
 	 * - latency_nice < 0 or WALT low-latency: minimum slice
 	 * - Default: base slice
 	 */
-	if (p && p->policy == SCHED_BATCH) {
+	if (p->policy == SCHED_BATCH) {
 		slice = sysctl_sched_base_slice * 4;
 	} else if (se->latency_nice > 0) {
 		slice = sysctl_sched_base_slice * (1 + se->latency_nice / 5);
