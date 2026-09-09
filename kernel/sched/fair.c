@@ -43,10 +43,14 @@ static inline bool task_fits_max(struct task_struct *p, int cpu);
  * (to see the precise effective timeslice length of your workload,
  *  run vmstat and monitor the context-switches (cs) field)
  *
- * (default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 4ms, units: nanoseconds)
+ *
+ * Reduced from 6ms to 4ms for enhanced EEVDF UI responsiveness.
+ * Lower values mean tasks get scheduled more frequently, reducing
+ * input lag and UI jank on Android touch-driven workloads.
  */
-unsigned int sysctl_sched_latency			= 6000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
+unsigned int sysctl_sched_latency			= 4000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 4000000ULL;
 
 /*
  * The initial- and re-scaling of tunables is configurable
@@ -723,6 +727,15 @@ int sched_proc_update_handler(struct ctl_table *table, int write,
 
 	if (ret || !write)
 		return ret;
+
+	/*
+	 * Clamp sched_latency_ns to 4ms maximum for EEVDF UI responsiveness.
+	 * Android init typically overrides this to 10ms which causes excessive
+	 * scheduling latency for touch-driven UI threads.
+	 */
+	if (write && table->data == &sysctl_sched_latency &&
+	    sysctl_sched_latency > 4000000U)
+		sysctl_sched_latency = 4000000U;
 
 	sched_nr_latency = DIV_ROUND_UP(sysctl_sched_latency,
 					sysctl_sched_min_granularity);
