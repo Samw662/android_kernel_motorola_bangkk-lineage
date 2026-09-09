@@ -1030,8 +1030,6 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
  */
 static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	u64 slice;
-
 	/*
 	 * EEVDF: if vruntime has not reached the deadline, no update needed.
 	 */
@@ -1043,12 +1041,20 @@ static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	 * nice) while the request time r_i is determined by
 	 * sysctl_sched_base_slice.
 	 */
-	slice = sysctl_sched_base_slice;
+	se->slice = sysctl_sched_base_slice;
 
 	/*
 	 * EEVDF: vd_i = ve_i + r_i / w_i
 	 */
-	se->deadline = se->vruntime + calc_delta_fair(slice, se);
+	se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
+
+	/*
+	 * The task has consumed its request, reschedule.
+	 */
+	if (cfs_rq->nr_running > 1) {
+		resched_curr(rq_of(cfs_rq));
+		clear_buddies(cfs_rq, se);
+	}
 }
 
 /*
@@ -4754,62 +4760,6 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		update_min_vruntime(cfs_rq);
 }
 
-/*
- * Preempt the current task with a newly woken task if needed:
- */
-static void
-check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
-{
-	unsigned long ideal_runtime, delta_exec;
-	struct sched_entity *se;
-	s64 delta;
-
-#ifdef CONFIG_SCHED_EEVDF
-	/*
-	 * EEVDF: when the entity has consumed its virtual deadline,
-	 * force reschedule. This replaces the CFS ideal_runtime check
-	 * with the EEVDF deadline-based check.
-	 */
-	if ((s64)(curr->deadline - curr->vruntime) <= 0) {
-		resched_curr(rq_of(cfs_rq));
-		clear_buddies(cfs_rq, curr);
-		return;
-	}
-#endif
-
-	ideal_runtime = sched_slice(cfs_rq, curr);
-	delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
-	if (delta_exec > ideal_runtime) {
-		resched_curr(rq_of(cfs_rq));
-		/*
-		 * The current task ran long enough, ensure it doesn't get
-		 * re-elected due to buddy favours.
-		 */
-		clear_buddies(cfs_rq, curr);
-		return;
-	}
-
-	/*
-	 * Ensure that a task that missed wakeup preemption by a
-	 * narrow margin doesn't have to wait for a full slice.
-	 * This also mitigates buddy induced latencies under load.
-	 */
-	if (delta_exec < sysctl_sched_min_granularity)
-		return;
-
-	se = __pick_first_entity(cfs_rq);
-	if (!se)
-		return;
-
-	delta = curr->vruntime - se->vruntime;
-
-	if (delta < 0)
-		return;
-
-	if (delta > ideal_runtime)
-		resched_curr(rq_of(cfs_rq));
-}
-
 static void
 set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
@@ -5116,9 +5066,6 @@ entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 			hrtimer_active(&rq_of(cfs_rq)->hrtick_timer))
 		return;
 #endif
-
-	if (cfs_rq->nr_running > 1)
-		check_preempt_tick(cfs_rq, curr);
 }
 
 
