@@ -505,6 +505,7 @@ struct sched_entity {
 
 #ifdef CONFIG_SCHED_EEVDF
 	u64				deadline;
+	u64				min_deadline;
 	u64				slice;
 	s64				vlag;
 #endif
