@@ -2628,6 +2628,64 @@ static int qpnp_pon_restore(struct device *dev)
 	return rc;
 }
 
+static int qpnp_pon_suspend(struct device *dev)
+{
+	return 0;
+}
+
+static int qpnp_pon_resume(struct device *dev)
+{
+	int i;
+	struct qpnp_pon_config *cfg;
+	struct qpnp_pon *pon = dev_get_drvdata(dev);
+	uint pon_rt_sts;
+	int rc;
+	bool key_status;
+
+	/*
+	 * Reset debounce state: ktime_get() is CLOCK_MONOTONIC which does not
+	 * advance during suspend. If a key release happened just before suspend,
+	 * kpdpwr_last_release_time would be within the debounce window and the
+	 * first wake event after resume would be silently swallowed.
+	 */
+	pon->kpdpwr_last_release_time = ktime_get();
+
+	for (i = 0; i < pon->num_pon_config; i++) {
+		cfg = &pon->pon_cfg[i];
+
+		/* Reset old_state so synthetic press logic works correctly */
+		cfg->old_state = false;
+
+		/*
+		 * Re-read PON_RT_STS after resume to catch any edge events
+		 * that may have occurred during the transition and re-report
+		 * the current state to userspace.
+		 */
+		if (cfg->key_code && cfg->state_irq > 0) {
+			rc = qpnp_pon_read(pon, QPNP_PON_RT_STS(pon),
+					   &pon_rt_sts);
+			if (rc)
+				continue;
+
+			key_status = !!(pon_rt_sts &
+				(is_pon_gen3(pon) ?
+				 QPNP_PON_GEN3_KPDPWR_N_SET :
+				 QPNP_PON_KPDPWR_N_SET));
+
+			/*
+			 * Always report current state after resume so that
+			 * Android input system knows the correct key state.
+			 */
+			input_report_key(pon->pon_input, cfg->key_code,
+					 key_status);
+			input_sync(pon->pon_input);
+			cfg->old_state = key_status;
+		}
+	}
+
+	return 0;
+}
+
 static int qpnp_pon_freeze(struct device *dev)
 {
 	int i, rc = 0;
@@ -2645,6 +2703,8 @@ static int qpnp_pon_freeze(struct device *dev)
 }
 
 static const struct dev_pm_ops qpnp_pon_pm_ops = {
+	.suspend_noirq = qpnp_pon_suspend,
+	.resume_noirq = qpnp_pon_resume,
 	.freeze = qpnp_pon_freeze,
 	.restore = qpnp_pon_restore,
 };

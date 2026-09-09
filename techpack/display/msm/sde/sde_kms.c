@@ -4203,7 +4203,7 @@ end:
 	/* enable hot-plug polling */
 	drm_kms_helper_poll_enable(ddev);
 
-	return 0;
+	return ret;
 }
 
 static const struct msm_kms_funcs kms_funcs = {
