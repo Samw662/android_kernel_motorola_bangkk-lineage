@@ -1956,6 +1956,9 @@ static int mmi_chrg_suspend(struct device *device)
 	struct platform_device *pdev = to_platform_device(device);
 	struct mmi_charger_manager *chip = platform_get_drvdata(pdev);
 
+	if (!chip)
+		return 0;
+
 	chip->suspended = true;
 
 	return 0;
@@ -1965,6 +1968,9 @@ static int mmi_chrg_resume(struct device *device)
 {
 	struct platform_device *pdev = to_platform_device(device);
 	struct mmi_charger_manager *chip = platform_get_drvdata(pdev);
+
+	if (!chip)
+		return 0;
 
 	chip->suspended = false;
 
