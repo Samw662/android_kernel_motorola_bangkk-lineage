@@ -922,6 +922,7 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
 	PN(se.min_deadline);
 	PN(se.slice);
 	P(se.vlag);
+	P(se.latency_nice);
 #endif
 
 	nr_switches = p->nvcsw + p->nivcsw;
@@ -1028,3 +1029,12 @@ void proc_sched_set_task(struct task_struct *p)
 	memset(&p->se.statistics, 0, sizeof(p->se.statistics));
 #endif
 }
+
+#ifdef CONFIG_SCHED_EEVDF
+void proc_sched_set_latency_nice(struct task_struct *p, int latency_nice)
+{
+	if (latency_nice < -20 || latency_nice > 19)
+		return;
+	p->se.latency_nice = latency_nice;
+}
+#endif

@@ -829,6 +829,10 @@ void init_entity_runnable_average(struct sched_entity *se)
 
 	se->runnable_weight = se->load.weight;
 
+#ifdef CONFIG_SCHED_EEVDF
+	se->latency_nice = 0;
+#endif
+
 	/* when this task enqueue'ed, it will contribute to its cfs_rq's load_avg */
 }
 
@@ -1077,13 +1081,18 @@ static __maybe_unused u64 entity_slice(struct sched_entity *se)
 	 * primary EEVDF tunable that determines the request size for
 	 * virtual deadline computation.
 	 *
-	 * - Low-latency tasks: minimum slice for earliest deadline
-	 * - SCHED_BATCH tasks: longest slice for latest deadline
-	 * - Default: base slice scaled by nr_running
+	 * - SCHED_BATCH tasks: maximum slice for throughput
+	 * - latency_nice > 0: scaled up (1x to 4x) for latency tolerance
+	 * - latency_nice < 0 or WALT low-latency: minimum slice
+	 * - Default: base slice
 	 */
 	if (p && p->policy == SCHED_BATCH) {
 		slice = sysctl_sched_base_slice * 4;
-	} else if (p && walt_low_latency_task(p)) {
+	} else if (se->latency_nice > 0) {
+		slice = sysctl_sched_base_slice * (1 + se->latency_nice / 5);
+		if (slice > sysctl_sched_base_slice * 4)
+			slice = sysctl_sched_base_slice * 4;
+	} else if (se->latency_nice < 0 || walt_low_latency_task(p)) {
 		slice = sysctl_sched_min_granularity;
 	} else if (nr_running >= sched_nr_latency) {
 		slice = sysctl_sched_min_granularity;

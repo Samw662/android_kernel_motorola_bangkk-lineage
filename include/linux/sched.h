@@ -508,6 +508,7 @@ struct sched_entity {
 	u64				min_deadline;
 	u64				slice;
 	s64				vlag;
+	int				latency_nice;
 #endif
 
 	u64				nr_migrations;

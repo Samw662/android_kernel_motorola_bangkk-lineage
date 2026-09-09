@@ -39,6 +39,9 @@ struct seq_file;
 extern void proc_sched_show_task(struct task_struct *p,
 				 struct pid_namespace *ns, struct seq_file *m);
 extern void proc_sched_set_task(struct task_struct *p);
+#ifdef CONFIG_SCHED_EEVDF
+extern void proc_sched_set_latency_nice(struct task_struct *p, int latency_nice);
+#endif
 #endif
 
 /* Attach to any functions which should be ignored in wchan output. */

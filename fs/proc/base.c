@@ -1501,12 +1501,31 @@ sched_write(struct file *file, const char __user *buf,
 {
 	struct inode *inode = file_inode(file);
 	struct task_struct *p;
+	char *kbuf;
+	char *tok;
 
 	p = get_proc_task(inode);
 	if (!p)
 		return -ESRCH;
-	proc_sched_set_task(p);
 
+	kbuf = memdup_user_nul(buf, count);
+	if (IS_ERR(kbuf)) {
+		put_task_struct(p);
+		return PTR_ERR(kbuf);
+	}
+
+	tok = strstrip(kbuf);
+#ifdef CONFIG_SCHED_EEVDF
+	if (sscanf(tok, "latency_nice %d", &p->se.latency_nice) == 1) {
+		if (p->se.latency_nice < -20 || p->se.latency_nice > 19)
+			p->se.latency_nice = 0;
+	} else
+#endif
+	{
+		proc_sched_set_task(p);
+	}
+
+	kfree(kbuf);
 	put_task_struct(p);
 
 	return count;
