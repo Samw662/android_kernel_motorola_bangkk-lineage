@@ -4979,22 +4979,12 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF: pick the eligible entity with the earliest virtual
-	 * deadline via pick_eevdf(), then also consider curr which
-	 * is not kept in the rb-tree.
+	 * EEVDF pick_eevdf() DISABLED: WALT vruntime boosts break
+	 * the running-sum accounting — weighted_vruntime_sum goes
+	 * to -8e18, entity_eligible() rejects everything, and
+	 * pick_eevdf() just falls back to CFS anyway. Skip the
+	 * overhead and go straight to leftmost-vruntime pick.
 	 */
-	se = pick_eevdf(cfs_rq);
-	if (!se)
-		se = left;
-
-	if (curr && curr != se) {
-		s64 avgvr = avg_vruntime(cfs_rq);
-
-		if ((s64)(curr->vruntime - avgvr) <= 0) {
-			if ((s64)(curr->deadline - se->deadline) < 0)
-				se = curr;
-		}
-	}
 #endif
 
 	/*
