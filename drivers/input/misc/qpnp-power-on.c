@@ -2643,12 +2643,12 @@ static int qpnp_pon_resume(struct device *dev)
 	bool key_status;
 
 	/*
-	 * Reset debounce state: ktime_get() is CLOCK_MONOTONIC which does not
-	 * advance during suspend. If a key release happened just before suspend,
-	 * kpdpwr_last_release_time would be within the debounce window and the
-	 * first wake event after resume would be silently swallowed.
+	 * Reset debounce: ktime_get() is CLOCK_MONOTONIC which doesn't
+	 * advance during suspend, so setting this to ktime_get() would
+	 * keep the pre-suspend value inside the debounce window. Use 0
+	 * so the first wake event after resume is never swallowed.
 	 */
-	pon->kpdpwr_last_release_time = ktime_get();
+	pon->kpdpwr_last_release_time = ktime_set(0, 0);
 
 	for (i = 0; i < pon->num_pon_config; i++) {
 		cfg = &pon->pon_cfg[i];
