@@ -1192,7 +1192,11 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	update_min_vruntime(cfs_rq);
 
 #ifdef CONFIG_SCHED_EEVDF
-	update_deadline(cfs_rq, curr);
+	/*
+	 * update_deadline() DISABLED: fires resched_curr() every tick
+	 * when nr_running > 1, way too many context switches.
+	 * Paired with pick_eevdf disable above.
+	 */
 #endif
 
 	if (entity_is_task(curr)) {
