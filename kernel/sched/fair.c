@@ -1193,10 +1193,16 @@ static void update_curr(struct cfs_rq *cfs_rq)
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * update_deadline() DISABLED: fires resched_curr() every tick
-	 * when nr_running > 1, way too many context switches.
-	 * Paired with pick_eevdf disable above.
+	 * EEVDF: when the current entity has consumed its request
+	 * (vruntime >= deadline), recalculate the deadline and
+	 * reschedule so other eligible entities get a chance to run.
+	 *
+	 * With WALT vruntime boosts disabled (see place_entity()),
+	 * deadlines are computed correctly from vruntime + slice,
+	 * so resched_curr() only fires when the task has truly
+	 * consumed its slice -- not on every tick.
 	 */
+	update_deadline(cfs_rq, curr);
 #endif
 
 	if (entity_is_task(curr)) {
@@ -4479,7 +4485,28 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 			thresh >>= 1;
 
 		vruntime -= thresh;
-#ifdef CONFIG_SCHED_WALT
+		/*
+		 * WALT vruntime boosts: SKIP when EEVDF is active.
+		 *
+		 * WALT's strategy of moving vruntime backward to give
+		 * tasks priority breaks EEVDF's weighted_vruntime_sum
+		 * accumulator -- multiple boosted tasks push the sum to
+		 * -8e18, entity_eligible() rejects everything, and
+		 * pick_eevdf() collapses to CFS anyway.
+		 *
+		 * EEVDF already provides the same latency benefit
+		 * through its deadline mechanism: WALT low-latency
+		 * tasks get sysctl_sched_min_granularity slice via
+		 * entity_slice(), which gives them an early virtual
+		 * deadline. pick_eevdf() picks earliest-deadline
+		 * entities, so these tasks get priority naturally.
+		 *
+		 * The vruntime boost was a CFS-era hack. In EEVDF,
+		 * place_entity() uses vlag to position tasks relative
+		 * to avg_vruntime, which already handles sleeper
+		 * fairness correctly.
+		 */
+#if defined(CONFIG_SCHED_WALT) && !defined(CONFIG_SCHED_EEVDF)
 		if (entity_is_task(se)) {
 			if (per_task_boost(task_of(se)) == TASK_BOOST_STRICT_MAX) {
 				vruntime -= thresh;
@@ -4521,9 +4548,11 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 #ifdef CONFIG_SCHED_EEVDF
 	/*
 	 * EEVDF: compute the entity's slice and deadline from the
-	 * (possibly boosted) vruntime. The WALT boosts above moved
-	 * vruntime backwards, which naturally makes deadline earlier
-	 * equivalent to CFS's vruntime boost but in EEVDF's model.
+	 * (possibly lag-adjusted) vruntime. When PLACE_LAG is active,
+	 * vruntime is relative to avg_vruntime via the vlag, giving
+	 * the entity a fair position. When WALT is active without
+	 * EEVDF, the GENTLE_FAIR_SLEEPERS path above moves vruntime
+	 * backward, making the deadline earlier.
 	 *
 	 * For initial placement (fork), PLACE_DEADLINE_INITIAL gives
 	 * the task a half-slice deadline so it gets a chance to run
@@ -4628,18 +4657,15 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	enqueue_runnable_load_avg(cfs_rq, se);
 	account_entity_enqueue(cfs_rq, se);
 
-	if (flags & ENQUEUE_WAKEUP)
-		place_entity(cfs_rq, se, 0);
-	/* Entity has migrated, no longer consider this task hot */
-	if (flags & ENQUEUE_MIGRATED)
-		se->exec_start = 0;
-
 #ifdef CONFIG_SCHED_EEVDF
 	/*
 	 * EEVDF: when a task wakes from sleep, remove its vruntime
-	 * contribution from the sleeping accumulator before adding it
-	 * back to the weighted average. This keeps avg_vruntime()
-	 * consistent across sleep/wake transitions.
+	 * contribution from the sleeping accumulator BEFORE place_entity()
+	 * changes vruntime. The dequeue path added the old vruntime's
+	 * contribution; we must subtract the same value to keep the
+	 * accumulator balanced. If we subtract after place_entity(),
+	 * the new vruntime differs from the stored one, leaving a
+	 * residual that accumulates over many sleep/wake cycles.
 	 */
 	if ((flags & ENQUEUE_WAKEUP) && entity_is_task(se)) {
 		s64 vdiff = (s64)(se->vruntime - cfs_rq->min_vruntime);
@@ -4647,6 +4673,12 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		cfs_rq->sleeping_weight_sum -= scale_load_down(se->load.weight);
 	}
 #endif
+
+	if (flags & ENQUEUE_WAKEUP)
+		place_entity(cfs_rq, se, 0);
+	/* Entity has migrated, no longer consider this task hot */
+	if (flags & ENQUEUE_MIGRATED)
+		se->exec_start = 0;
 
 	check_schedstat_required();
 	update_stats_enqueue(cfs_rq, se, flags);
@@ -4983,12 +5015,16 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 
 #ifdef CONFIG_SCHED_EEVDF
 	/*
-	 * EEVDF pick_eevdf() DISABLED: WALT vruntime boosts break
-	 * the running-sum accounting — weighted_vruntime_sum goes
-	 * to -8e18, entity_eligible() rejects everything, and
-	 * pick_eevdf() just falls back to CFS anyway. Skip the
-	 * overhead and go straight to leftmost-vruntime pick.
+	 * EEVDF: select the eligible entity with the earliest virtual
+	 * deadline. This provides bounded latency proportional to each
+	 * entity's request size, which is the core benefit of EEVDF
+	 * over plain CFS.
+	 *
+	 * WALT vruntime boosts are skipped when EEVDF is active
+	 * (see place_entity()), so weighted_vruntime_sum stays
+	 * balanced and entity_eligible() works correctly.
 	 */
+	se = pick_eevdf(cfs_rq);
 #endif
 
 	/*
