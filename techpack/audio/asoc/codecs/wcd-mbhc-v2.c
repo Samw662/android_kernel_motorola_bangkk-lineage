@@ -1896,6 +1896,17 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_component *component,
 			return ret;
 		}
 
+		/*
+		 * Add EV_SW capability so that vendor binaries (e.g.
+		 * capsense_reset) that enumerate all sound card input
+		 * devices and require EV_SW do not abort at startup.
+		 * The Button Jack only carries EV_KEY button events;
+		 * the SW bit is set purely to satisfy those checks.
+		 */
+		if (mbhc->button_jack.jack->input_dev)
+			input_set_capability(mbhc->button_jack.jack->input_dev,
+					     EV_SW, SW_HEADPHONE_INSERT);
+
 		ret = snd_jack_set_key(mbhc->button_jack.jack,
 				       SND_JACK_BTN_0,
 				       KEY_MEDIA);
