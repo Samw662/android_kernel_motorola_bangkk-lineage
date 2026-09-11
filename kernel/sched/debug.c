@@ -554,10 +554,6 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 			cfs_rq->weighted_vruntime_sum);
 	SEQ_printf(m, "  .%-30s: %ld\n", "load_sum",
 			cfs_rq->load_sum);
-	SEQ_printf(m, "  .%-30s: %Ld\n", "sleeping_vruntime_sum",
-			cfs_rq->sleeping_vruntime_sum);
-	SEQ_printf(m, "  .%-30s: %ld\n", "sleeping_weight_sum",
-			cfs_rq->sleeping_weight_sum);
 #endif
 #ifdef CONFIG_SMP
 	SEQ_printf(m, "  .%-30s: %ld\n", "runnable_weight", cfs_rq->runnable_weight);

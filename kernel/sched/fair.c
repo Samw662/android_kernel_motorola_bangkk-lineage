@@ -4444,116 +4444,105 @@ static inline bool entity_is_long_sleeper(struct sched_entity *se)
 static void
 place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 {
-	u64 vruntime = cfs_rq->min_vruntime;
+	u64 vslice, vruntime = avg_vruntime(cfs_rq);
+	s64 lag = 0;
 
 	/*
-	 * The 'current' period is already promised to the current tasks,
-	 * however the extra weight of the new task will slow them down a
-	 * little, place the new task so that it fits in the slot that
-	 * stays open at the end.
+	 * EEVDF: vd_i = ve_i + r_i/w_i
 	 */
-	if (initial && sched_feat(START_DEBIT))
-		vruntime += sched_vslice(cfs_rq, se);
+	se->slice = entity_slice(se);
+	vslice = calc_delta_fair(se->slice, se);
 
-#ifdef CONFIG_SCHED_EEVDF
-	if (!initial && se->vlag && sched_feat(PLACE_LAG)) {
+	/*
+	 * Due to how V is constructed as the weighted average of entities,
+	 * adding tasks with positive lag, or removing tasks with negative lag
+	 * will move 'time' backwards, this can screw around with the lag of
+	 * other tasks.
+	 *
+	 * EEVDF: placement strategy #1 / #2
+	 */
+	if (sched_feat(PLACE_LAG) && cfs_rq->nr_running && se->vlag) {
+		struct sched_entity *curr = cfs_rq->curr;
+		unsigned long load;
+
+		lag = se->vlag;
+
 		/*
-		 * EEVDF lag-based placement: restore the entity's position
-		 * relative to avg_vruntime using its persisted lag. A
-		 * positive vlag means the entity was owed CPU time, so it
-		 * should be placed ahead of avg_vruntime. A negative vlag
-		 * means it exceeded its share, so place it behind.
+		 * If we want to place a task and preserve lag, we have to
+		 * consider the effect of the new entity on the weighted
+		 * average and compensate for this, otherwise lag can quickly
+		 * evaporate.
 		 *
-		 * When PLACE_LAG is disabled, fall through to the CFS
-		 * GENTLE_FAIR_SLEEPERS placement below.
-		 */
-		s64 avgvr = avg_vruntime(cfs_rq);
-
-		if (se->vlag > 0)
-			vruntime = avgvr - se->vlag;
-		else
-			vruntime = avgvr + abs(se->vlag);
-	} else
-#endif
-	/* sleeps up to a single latency don't count. */
-	if (!initial) {
-		unsigned long thresh = sysctl_sched_latency;
-
-		/*
-		 * Halve their sleep time's effect, to allow
-		 * for a gentler effect of sleepers:
-		 */
-		if (sched_feat(GENTLE_FAIR_SLEEPERS))
-			thresh >>= 1;
-
-		vruntime -= thresh;
-#if defined(CONFIG_SCHED_WALT) && !defined(CONFIG_SCHED_EEVDF)
-		/*
-		 * WALT vruntime boosts: push vruntime backwards so boosted
-		 * tasks appear more starved and get picked sooner.
+		 * Lag is defined as:
 		 *
-		 * DISABLED when EEVDF is active: EEVDF's PLACE_LAG mechanism
-		 * already provides bounded-latency wakeup placement via
-		 * se->vlag and avg_vruntime(). WALT's backwards vruntime
-		 * boosts corrupt the weighted_vruntime_sum accumulator by
-		 * making entity_key() return huge negative values, which
-		 * breaks entity_eligible() and collapses pick_eevdf().
+		 *   lag_i = S - s_i = w_i * (V - v_i)
+		 *
+		 * To avoid the 'w_i' term all over the place, we only track
+		 * the virtual lag:
+		 *
+		 *   vl_i = V - v_i <=> v_i = V - vl_i
+		 *
+		 * And we take V to be the weighted average of all v:
+		 *
+		 *   V = (\Sum w_j*v_j) / W
+		 *
+		 * Where W is: \Sum w_j
+		 *
+		 * Then, the weighted average after adding an entity with lag
+		 * vl_i is given by:
+		 *
+		 *   V' = (\Sum w_j*v_j + w_i*v_i) / (W + w_i)
+		 *      = (W*V + w_i*(V - vl_i)) / (W + w_i)
+		 *      = (W*V + w_i*V - w_i*vl_i) / (W + w_i)
+		 *      = (V*(W + w_i) - w_i*l) / (W + w_i)
+		 *      = V - w_i*vl_i / (W + w_i)
+		 *
+		 * And the actual lag after adding an entity with vl_i is:
+		 *
+		 *   vl'_i = V' - v_i
+		 *         = V - w_i*vl_i / (W + w_i) - (V - vl_i)
+		 *         = vl_i - w_i*vl_i / (W + w_i)
+		 *
+		 * Which is strictly less than vl_i. So in order to preserve lag
+		 * we should inflate the lag before placement such that the
+		 * effective lag after placement comes out right.
+		 *
+		 * As such, invert the above relation for vl'_i to get the vl_i
+		 * we need to use such that the lag after placement is the lag
+		 * we computed before dequeue.
+		 *
+		 *   vl'_i = vl_i - w_i*vl_i / (W + w_i)
+		 *         = ((W + w_i)*vl_i - w_i*vl_i) / (W + w_i)
+		 *
+		 *   (W + w_i)*vl'_i = (W + w_i)*vl_i - w_i*vl_i
+		 *                   = W*vl_i
+		 *
+		 *   vl_i = (W + w_i)*vl'_i / W
 		 */
-		if (entity_is_task(se)) {
-			if (per_task_boost(task_of(se)) == TASK_BOOST_STRICT_MAX) {
-				vruntime -= thresh;
-				vruntime -= sysctl_sched_latency;
-			} else if (walt_binder_low_latency_task(task_of(se))) {
-				vruntime -= sysctl_sched_latency;
-			} else if (task_rtg_high_prio(task_of(se)) ||
-					walt_procfs_low_latency_task(task_of(se))) {
-				vruntime -= thresh;
-			}
-		}
-#endif
+		load = cfs_rq->load_sum;
+		if (curr && curr->on_rq)
+			load += scale_load_down(curr->load.weight);
+
+		lag *= load + scale_load_down(se->load.weight);
+		if (WARN_ON_ONCE(!load))
+			load = 1;
+		lag = div_s64(lag, load);
 	}
 
-	/*
-	 * Pull vruntime of the entity being placed to the base level of
-	 * cfs_rq, to prevent boosting it if placed backwards.
-	 * However, min_vruntime can advance much faster than real time, with
-	 * the extreme being when an entity with the minimal weight always runs
-	 * on the cfs_rq. If the waking entity slept for a long time, its
-	 * vruntime difference from min_vruntime may overflow s64 and their
-	 * comparison may get inversed, so ignore the entity's original
-	 * vruntime in that case.
-	 * The maximal vruntime speedup is given by the ratio of normal to
-	 * minimal weight: scale_load_down(NICE_0_LOAD) / MIN_SHARES.
-	 * When placing a migrated waking entity, its exec_start has been set
-	 * from a different rq. In order to take into account a possible
-	 * divergence between new and prev rq's clocks task because of irq and
-	 * stolen time, we take an additional margin.
-	 * So, cutting off on the sleep time of
-	 *     2^63 / scale_load_down(NICE_0_LOAD) ~ 104 days
-	 * should be safe.
-	 */
+	se->vruntime = vruntime - lag;
+
 	if (entity_is_long_sleeper(se))
 		se->vruntime = vruntime;
 	else
 		se->vruntime = max_vruntime(se->vruntime, vruntime);
 
-#ifdef CONFIG_SCHED_EEVDF
+	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
+		vslice /= 2;
+
 	/*
-	 * EEVDF: compute the entity's slice and deadline from the
-	 * (possibly boosted) vruntime. The WALT boosts above moved
-	 * vruntime backwards, which naturally makes deadline earlier
-	 * equivalent to CFS's vruntime boost but in EEVDF's model.
-	 *
-	 * For initial placement (fork), PLACE_DEADLINE_INITIAL gives
-	 * the task a half-slice deadline so it gets a chance to run
-	 * quickly without dominating the runqueue.
+	 * EEVDF: vd_i = ve_i + r_i/w_i
 	 */
-	se->slice = entity_slice(se);
-	if (initial && sched_feat(PLACE_DEADLINE_INITIAL))
-		se->deadline = se->vruntime + se->slice / 2;
-	else
-		se->deadline = se->vruntime + se->slice;
-#endif
+	se->deadline = se->vruntime + vslice;
 }
 
 static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
@@ -8145,7 +8134,6 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	struct task_struct *curr = rq->curr;
 	struct sched_entity *se = &curr->se, *pse = &p->se;
 	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
-	int scale = cfs_rq->nr_running >= sched_nr_latency;
 	int next_buddy_marked = 0;
 
 	if (unlikely(se == pse))
@@ -8160,7 +8148,7 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	if (unlikely(throttled_hierarchy(cfs_rq_of(pse))))
 		return;
 
-	if (sched_feat(NEXT_BUDDY) && scale && !(wake_flags & WF_FORK)) {
+	if (sched_feat(NEXT_BUDDY) && !(wake_flags & WF_FORK)) {
 		set_next_buddy(pse);
 		next_buddy_marked = 1;
 	}
@@ -8194,31 +8182,13 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	update_curr(cfs_rq_of(se));
 	BUG_ON(!pse);
 
-#ifdef CONFIG_SCHED_EEVDF
 	/*
 	 * EEVDF preemption: if the woken entity is the one that
 	 * pick_eevdf() would select on the current runqueue,
 	 * it should preempt immediately.
 	 */
-	if (entity_is_task(pse)) {
-		if (pick_eevdf(cfs_rq_of(se)) == pse) {
-			if (!next_buddy_marked)
-				set_next_buddy(pse);
-			goto preempt;
-		}
-		return;
-	}
-#endif
-
-	if (wakeup_preempt_entity(se, pse) == 1) {
-		/*
-		 * Bias pick_next to pick the sched entity that is
-		 * triggering this preemption.
-		 */
-		if (!next_buddy_marked)
-			set_next_buddy(pse);
+	if (pick_eevdf(cfs_rq_of(se)) == pse)
 		goto preempt;
-	}
 
 	return;
 
@@ -8235,9 +8205,6 @@ preempt:
 	 */
 	if (unlikely(!se->on_rq || curr == rq->idle))
 		return;
-
-	if (sched_feat(LAST_BUDDY) && scale && entity_is_task(se))
-		set_last_buddy(se);
 }
 
 static struct task_struct *
