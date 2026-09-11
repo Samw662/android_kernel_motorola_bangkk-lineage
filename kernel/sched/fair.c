@@ -8085,9 +8085,7 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	 *
 	 * Note: this also catches the edge-case of curr being in a throttled
 	 * group (e.g. via set_curr_task), since update_curr() (in the
-	 * enqueue of curr) will have resulted in resched being set.  This
-	 * prevents us from potentially nominating it as a false LAST_BUDDY
-	 * below.
+	 * enqueue of curr) will have resulted in resched being set.
 	 */
 	if (test_tsk_need_resched(curr))
 		return;
