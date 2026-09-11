@@ -8081,7 +8081,7 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 
 	find_matching_se(&se, &pse);
 	update_curr(cfs_rq_of(se));
-	BUG_ON(!pse);
+	WARN_ON_ONCE(!pse);
 
 	/*
 	 * EEVDF preemption: if the woken entity is the one that
