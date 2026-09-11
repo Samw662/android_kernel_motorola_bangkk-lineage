@@ -4846,8 +4846,13 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *se = __pick_eevdf(cfs_rq);
 
-	if (!se)
-		se = __pick_first_entity(cfs_rq);
+	if (!se) {
+		struct sched_entity *left = __pick_first_entity(cfs_rq);
+		if (left) {
+			pr_err("EEVDF scheduling fail, picking leftmost\n");
+			return left;
+		}
+	}
 
 	return se;
 }
