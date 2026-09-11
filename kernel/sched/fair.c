@@ -8067,11 +8067,6 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	if (test_tsk_need_resched(curr))
 		return;
 
-	/* Idle tasks are by definition preempted by non-idle tasks. */
-	if (unlikely(task_has_idle_policy(curr)) &&
-	    likely(!task_has_idle_policy(p)))
-		goto preempt;
-
 	/*
 	 * Batch and idle tasks do not preempt non-idle tasks (their preemption
 	 * is driven by the tick):
@@ -8082,6 +8077,17 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	find_matching_se(&se, &pse);
 	update_curr(cfs_rq_of(se));
 	WARN_ON_ONCE(!pse);
+
+	/*
+	 * Preempt an idle group in favor of a non-idle group (and don't preempt
+	 * in the inverse case).
+	 */
+	if (entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se))) &&
+	    entity_is_task(pse) && likely(!task_has_idle_policy(task_of(pse))))
+		goto preempt;
+	if ((entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se)))) !=
+	    (entity_is_task(pse) && unlikely(task_has_idle_policy(task_of(pse)))))
+		return;
 
 	/*
 	 * EEVDF preemption: if the woken entity is the one that
