@@ -67,6 +67,6 @@ obj-$(CONFIG_WIGIG_SENSING_SPI)	+= wigig_sensing.o
 obj-$(CONFIG_HISI_HIKEY_USB)	+= hisi_hikey_usb.o
 obj-y				+= ldo_vibrator_mmi/
 obj-$(CONFIG_AWINIC_SAR) 	+= awinic/
-obj-$(CONFIG_SX937X_SAR) 	+= sx937x/
+obj-$(CONFIG_SARSENSOR_SX937X) 	+= sx937x/
 obj-$(CONFIG_UTAG)  += utag/
 obj-y				+= wearystars.o
