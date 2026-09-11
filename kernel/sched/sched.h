@@ -631,7 +631,7 @@ struct cfs_rq {
 
 #ifdef CONFIG_SCHED_EEVDF
 	s64			weighted_vruntime_sum;
-	u32			load_sum;
+	long			load_sum;
 #endif
 
 	struct rb_root_cached	tasks_timeline;

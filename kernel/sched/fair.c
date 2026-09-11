@@ -1195,17 +1195,8 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	schedstat_add(cfs_rq->exec_clock, delta_exec);
 
 	curr->vruntime += calc_delta_fair(delta_exec, curr);
-	update_min_vruntime(cfs_rq);
-
-#ifdef CONFIG_SCHED_EEVDF
-	/*
-	 * EEVDF: when the entity's vruntime reaches its virtual deadline,
-	 * compute a new deadline and optionally reschedule. This ensures
-	 * bounded latency: a task with a short slice (low latency_nice)
-	 * gets a tight deadline and is rescheduled quickly.
-	 */
 	update_deadline(cfs_rq, curr);
-#endif
+	update_min_vruntime(cfs_rq);
 
 	if (entity_is_task(curr)) {
 		struct task_struct *curtask = task_of(curr);
@@ -4531,11 +4522,6 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 
 	se->vruntime = vruntime - lag;
 
-	if (entity_is_long_sleeper(se))
-		se->vruntime = vruntime;
-	else
-		se->vruntime = max_vruntime(se->vruntime, vruntime);
-
 	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
 		vslice /= 2;
 
@@ -4959,16 +4945,6 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
 	check_cfs_rq_runtime(cfs_rq);
 
 	check_spread(cfs_rq, prev);
-
-#ifdef CONFIG_SCHED_EEVDF
-	/*
-	 * EEVDF: compute lag while entity is still current (vruntime
-	 * is up to date). This persists the lag for the next
-	 * place_entity() call on enqueue.
-	 */
-	if (prev->on_rq)
-		update_entity_lag(cfs_rq, prev);
-#endif
 
 	if (prev->on_rq) {
 		update_stats_wait_start(cfs_rq, prev);
