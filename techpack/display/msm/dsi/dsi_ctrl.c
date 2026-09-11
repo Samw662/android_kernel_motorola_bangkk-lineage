@@ -407,7 +407,7 @@ static void dsi_ctrl_dma_cmd_wait_for_done(struct work_struct *work)
 			DSI_CTRL_WARN(dsi_ctrl,
 					"dma_tx done but irq not triggered\n");
 		} else {
-			DSI_CTRL_ERR(dsi_ctrl,
+			DSI_CTRL_WARN(dsi_ctrl,
 					"Command transfer failed\n");
 		}
 		dsi_ctrl_disable_status_interrupt(dsi_ctrl,

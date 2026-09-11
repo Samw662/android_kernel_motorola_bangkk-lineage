@@ -1322,7 +1322,9 @@ static int dsi_panel_set_hbm(struct dsi_panel *panel,
 			dsi_panel_lhbm_waitfor_fps_valid(panel);
 
 		rc = dsi_panel_send_param_cmd(panel, param_info);
-		if (rc < 0) {
+		if (rc == -ENODEV) {
+			DSI_DEBUG("%s: panel not initialized, skipping HBM param\n", __func__);
+		} else if (rc < 0) {
 			DSI_ERR("%s: failed to send param cmds. ret=%d\n", __func__, rc);
 		} else {
 			if(lhbm_config->enable) {
@@ -1330,7 +1332,7 @@ static int dsi_panel_set_hbm(struct dsi_panel *panel,
 				if (lhbm_config->resend_lbhm_off && param_info->value == HBM_OFF_STATE) {
 					usleep_range(5000, 5010);
 					rc = dsi_panel_send_param_cmd(panel, param_info);
-					if (rc < 0)
+					if (rc < 0 && rc != -ENODEV)
 						DSI_ERR("%s: failed to resend param cmds. ret=%d\n", __func__, rc);
 				}
 			} else
