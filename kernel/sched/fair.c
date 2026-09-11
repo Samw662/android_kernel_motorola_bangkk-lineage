@@ -4588,26 +4588,16 @@ static inline bool cfs_bandwidth_used(void);
 static void
 enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
-	bool renorm = !(flags & ENQUEUE_WAKEUP) || (flags & ENQUEUE_MIGRATED);
 	bool curr = cfs_rq->curr == se;
 
 	/*
 	 * If we're the current task, we must renormalise before calling
 	 * update_curr().
 	 */
-	if (renorm && curr)
-		se->vruntime += cfs_rq->min_vruntime;
+	if (curr)
+		place_entity(cfs_rq, se, 0);
 
 	update_curr(cfs_rq);
-
-	/*
-	 * Otherwise, renormalise after, such that we're placed at the current
-	 * moment in time, instead of some random moment in the past. Being
-	 * placed in the past could significantly boost this task to the
-	 * fairness detriment of existing tasks.
-	 */
-	if (renorm && !curr)
-		se->vruntime += cfs_rq->min_vruntime;
 
 	/*
 	 * When enqueuing a sched_entity, we must:
