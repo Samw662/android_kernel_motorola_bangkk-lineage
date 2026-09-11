@@ -575,11 +575,26 @@ static inline s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
 #define __node_2_se(node) \
 	rb_entry((node), struct sched_entity, run_node)
 
+/*
+ * When min_vruntime advances by delta, all entity_keys (v_i - min_vruntime)
+ * decrease by delta, so the weighted sum decreases by delta * total_weight.
+ * This must be called whenever min_vruntime moves forward to keep the
+ * accumulator consistent.
+ */
+static inline
+void avg_vruntime_update(struct cfs_rq *cfs_rq, s64 delta)
+{
+	/*
+	 * v' = v + d ==> avg_vruntime' = avg_runtime - d*avg_load
+	 */
+	cfs_rq->weighted_vruntime_sum -= (s64)cfs_rq->load_sum * delta;
+}
+
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *curr = cfs_rq->curr;
 	struct rb_node *leftmost = rb_first_cached(&cfs_rq->tasks_timeline);
-
+	s64 delta;
 	u64 vruntime = cfs_rq->min_vruntime;
 
 	if (curr) {
@@ -600,6 +615,9 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 	}
 
 	/* ensure we never gain time by being placed backwards. */
+	delta = (s64)(vruntime - cfs_rq->min_vruntime);
+	if (delta > 0)
+		avg_vruntime_update(cfs_rq, delta);
 	cfs_rq->min_vruntime = max_vruntime(cfs_rq->min_vruntime, vruntime);
 #ifndef CONFIG_64BIT
 	smp_wmb();
@@ -943,8 +961,8 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq, int force)
  *
  * Where:
  *   v0 = cfs_rq->min_vruntime
- *   Left side  = weighted_vruntime_sum + sleeping_vruntime_sum + curr contribution
- *   Right side = entity_key(se) * (load_sum + sleeping_weight_sum + curr weight)
+ *   Left side  = weighted_vruntime_sum + curr contribution
+ *   Right side = entity_key(se) * (load_sum + curr weight)
  *
  * The currently running entity (curr) is NOT in the rb-tree and therefore
  * NOT accounted in the sums. Add its contribution inline.
@@ -954,12 +972,6 @@ static __maybe_unused int entity_eligible(struct cfs_rq *cfs_rq, struct sched_en
 	struct sched_entity *curr = cfs_rq->curr;
 	s64 avg = cfs_rq->weighted_vruntime_sum;
 	long load = cfs_rq->load_sum;
-
-	/* Include sleeping entities in the weighted average */
-	if (cfs_rq->sleeping_weight_sum) {
-		avg += cfs_rq->sleeping_vruntime_sum;
-		load += cfs_rq->sleeping_weight_sum;
-	}
 
 	/* Include the currently running entity (not in the rb-tree) */
 	if (curr && curr->on_rq) {
@@ -981,15 +993,6 @@ static __maybe_unused void avg_vruntime_add(struct cfs_rq *cfs_rq, struct sched_
 	unsigned long weight = scale_load_down(se->load.weight);
 	s64 key = entity_key(cfs_rq, se);
 
-	/*
-	 * Safety clamp: in vanilla EEVDF entity_key should be within
-	 * ~sysctl_sched_latency of zero. WALT can push it to -1e17 or
-	 * worse, which overflows the accumulator. Clamp to ±2x latency
-	 * to prevent catastrophic values; in normal operation this is
-	 * a no-op.
-	 */
-	key = clamp(key, (s64)-2 * (s64)sysctl_sched_latency,
-			 (s64)2 * (s64)sysctl_sched_latency);
 	cfs_rq->weighted_vruntime_sum += key * weight;
 	cfs_rq->load_sum += weight;
 }
@@ -999,8 +1002,6 @@ static __maybe_unused void avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_
 	unsigned long weight = scale_load_down(se->load.weight);
 	s64 key = entity_key(cfs_rq, se);
 
-	key = clamp(key, (s64)-2 * (s64)sysctl_sched_latency,
-			 (s64)2 * (s64)sysctl_sched_latency);
 	cfs_rq->weighted_vruntime_sum -= key * weight;
 	cfs_rq->load_sum -= weight;
 }
@@ -1023,12 +1024,6 @@ static __maybe_unused s64 avg_vruntime(struct cfs_rq *cfs_rq)
 	struct sched_entity *curr = cfs_rq->curr;
 	s64 avg = cfs_rq->weighted_vruntime_sum;
 	long load = cfs_rq->load_sum;
-
-	/* Include sleeping entities in the average */
-	if (cfs_rq->sleeping_weight_sum) {
-		avg += cfs_rq->sleeping_vruntime_sum;
-		load += cfs_rq->sleeping_weight_sum;
-	}
 
 	/* Include the currently running entity (not in the rb-tree) */
 	if (curr && curr->on_rq) {
@@ -4658,26 +4653,6 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	if (flags & ENQUEUE_MIGRATED)
 		se->exec_start = 0;
 
-#ifdef CONFIG_SCHED_EEVDF
-	/*
-	 * EEVDF: when a task wakes from sleep, remove its vruntime
-	 * contribution from the sleeping accumulator before adding it
-	 * back to the weighted average. This keeps avg_vruntime()
-	 * consistent across sleep/wake transitions.
-	 */
-	if ((flags & ENQUEUE_WAKEUP) && entity_is_task(se)) {
-		s64 vdiff = (s64)(se->vruntime - cfs_rq->min_vruntime);
-		vdiff = clamp(vdiff, (s64)-2 * (s64)sysctl_sched_latency,
-				 (s64)2 * (s64)sysctl_sched_latency);
-		cfs_rq->sleeping_vruntime_sum -= vdiff * scale_load_down(se->load.weight);
-		cfs_rq->sleeping_weight_sum -= scale_load_down(se->load.weight);
-		if (cfs_rq->sleeping_weight_sum < 0) {
-			cfs_rq->sleeping_vruntime_sum = 0;
-			cfs_rq->sleeping_weight_sum = 0;
-		}
-	}
-#endif
-
 	check_schedstat_required();
 	update_stats_enqueue(cfs_rq, se, flags);
 	check_spread(cfs_rq, se);
@@ -4780,43 +4755,6 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		__dequeue_entity(cfs_rq, se);
 	se->on_rq = 0;
 	account_entity_dequeue(cfs_rq, se);
-
-#ifdef CONFIG_SCHED_EEVDF
-	/*
-	 * EEVDF: when a task goes to sleep, track its vruntime contribution
-	 * separately so avg_vruntime() can include sleeping entities.
-	 * This prevents the average from becoming artificially inflated
-	 * when many tasks are sleeping, which would cause newly-woken
-	 * tasks to receive unfair scheduling priority.
-	 */
-	if ((flags & DEQUEUE_SLEEP) && entity_is_task(se)) {
-		unsigned long weight = scale_load_down(se->load.weight);
-		s64 vdiff = (s64)(se->vruntime - cfs_rq->min_vruntime);
-		vdiff = clamp(vdiff, (s64)-2 * (s64)sysctl_sched_latency,
-				 (s64)2 * (s64)sysctl_sched_latency);
-		cfs_rq->sleeping_vruntime_sum += vdiff * weight;
-		cfs_rq->sleeping_weight_sum += weight;
-	}
-	/*
-	 * avg_vruntime_sub() is now called from __dequeue_entity(),
-	 * which only runs when se != cfs_rq->curr. This is correct because
-	 * curr is never in the rb-tree and therefore was never added to
-	 * the avg_vruntime accumulator.
-	 */
-	/*
-	 * Safety reset: when the runqueue empties, force the running
-	 * accumulator to zero. Any residual is accumulated error from
-	 * WALT-corrupted vruntimes that didn't cancel out perfectly
-	 * across enqueue/dequeue pairs. This is a no-op when the math
-	 * is clean.
-	 */
-	if (cfs_rq->nr_running == 0) {
-		cfs_rq->weighted_vruntime_sum = 0;
-		cfs_rq->load_sum = 0;
-		cfs_rq->sleeping_vruntime_sum = 0;
-		cfs_rq->sleeping_weight_sum = 0;
-	}
-#endif
 
 	/*
 	 * Normalize after update_curr(); which will also have moved
@@ -5004,72 +4942,17 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 static int
 wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se);
 
-/*
- * Pick the next process, keeping these things in mind, in this order:
- * 1) keep things fair between processes/task groups
- * 2) pick the "next" process, since someone really wants that to run
- * 3) pick the "last" process, for cache locality
- * 4) do not run the "skip" process, if something else is available
- */
 static struct sched_entity *
 pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 {
-	struct sched_entity *left = __pick_first_entity(cfs_rq);
-	struct sched_entity *se;
-
 	/*
-	 * If curr is set we have to see if its left of the leftmost entity
-	 * still in the tree, provided there was anything in the tree at all.
+	 * Enabling NEXT_BUDDY will affect latency but not fairness.
 	 */
-	if (!left || (curr && entity_before(curr, left)))
-		left = curr;
+	if (sched_feat(NEXT_BUDDY) && cfs_rq->next &&
+	    entity_eligible(cfs_rq, cfs_rq->next))
+		return cfs_rq->next;
 
-	se = left; /* ideally we run the leftmost entity */
-
-#ifdef CONFIG_SCHED_EEVDF
-	/*
-	 * EEVDF: use deadline-based selection instead of pure
-	 * leftmost-vruntime. pick_eevdf() picks the entity with
-	 * the earliest virtual deadline among eligible tasks,
-	 * providing bounded latency guarantees.
-	 */
-	se = pick_eevdf(cfs_rq);
-#endif
-
-	/*
-	 * Avoid running the skip buddy, if running something else can
-	 * be done without getting too unfair.
-	 */
-	if (cfs_rq->skip == se) {
-		struct sched_entity *second;
-
-		if (se == curr) {
-			second = __pick_first_entity(cfs_rq);
-		} else {
-			second = __pick_next_entity(se);
-			if (!second || (curr && entity_before(curr, second)))
-				second = curr;
-		}
-
-		if (second && wakeup_preempt_entity(second, left) < 1)
-			se = second;
-	}
-
-	/*
-	 * Prefer last buddy, try to return the CPU to a preempted task.
-	 */
-	if (cfs_rq->last && wakeup_preempt_entity(cfs_rq->last, left) < 1)
-		se = cfs_rq->last;
-
-	/*
-	 * Someone really wants this to run. If it's not unfair, run it.
-	 */
-	if (cfs_rq->next && wakeup_preempt_entity(cfs_rq->next, left) < 1)
-		se = cfs_rq->next;
-
-	clear_buddies(cfs_rq, se);
-
-	return se;
+	return pick_eevdf(cfs_rq);
 }
 
 static bool check_cfs_rq_runtime(struct cfs_rq *cfs_rq);
