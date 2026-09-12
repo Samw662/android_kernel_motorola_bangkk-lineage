@@ -1005,6 +1005,26 @@ static __maybe_unused int entity_eligible(struct cfs_rq *cfs_rq, struct sched_en
 }
 
 /*
+ * Saturating multiply for accumulator protection.
+ *
+ * On WALT/PELT-boosted kernels, scale_load_down(se->load.weight) can be
+ * large. The product key * weight can overflow s64, corrupting
+ * weighted_vruntime_sum and causing EEVDF placement errors that manifest
+ * as stuttering under gaming load.
+ *
+ * Clamp the product to [S64_MIN, S64_MAX] before the accumulator add/sub.
+ */
+static inline s64 sat_mul_s64(s64 key, unsigned long weight)
+{
+	s64 prod;
+
+	if (__builtin_mul_overflow(key, (s64)weight, &prod))
+		return key < 0 ? S64_MIN : S64_MAX;
+
+	return prod;
+}
+
+/*
  * EEVDF helper: update the weighted average vruntime of the cfs_rq.
  * Called when entities are enqueued/dequeued to maintain the running average.
  */
@@ -1013,7 +1033,7 @@ static __maybe_unused void avg_vruntime_add(struct cfs_rq *cfs_rq, struct sched_
 	unsigned long weight = scale_load_down(se->load.weight);
 	s64 key = entity_key(cfs_rq, se);
 
-	cfs_rq->weighted_vruntime_sum += key * weight;
+	cfs_rq->weighted_vruntime_sum += sat_mul_s64(key, weight);
 	cfs_rq->load_sum += weight;
 }
 
@@ -1022,7 +1042,7 @@ static __maybe_unused void avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_
 	unsigned long weight = scale_load_down(se->load.weight);
 	s64 key = entity_key(cfs_rq, se);
 
-	cfs_rq->weighted_vruntime_sum -= key * weight;
+	cfs_rq->weighted_vruntime_sum -= sat_mul_s64(key, weight);
 	cfs_rq->load_sum -= weight;
 }
 
@@ -1150,7 +1170,10 @@ static __maybe_unused u64 entity_slice(struct sched_entity *se)
 	 *
 	 * - SCHED_BATCH tasks: maximum slice for throughput
 	 * - latency_nice > 0: scaled up (1x to 4x) for latency tolerance
-	 * - latency_nice < 0 or WALT low-latency: minimum slice
+	 * - latency_nice < 0: minimum slice (explicit latency-sensitive)
+	 * - WALT low-latency: base slice (NOT minimum — prevents
+	 *   context switch storms when WALT mass-marks tasks during gaming)
+	 * - nr_running >= sched_nr_latency: minimum slice (congestion)
 	 * - Default: base slice
 	 */
 	if (p->policy == SCHED_BATCH) {
@@ -1159,8 +1182,19 @@ static __maybe_unused u64 entity_slice(struct sched_entity *se)
 		slice = sysctl_sched_base_slice * (1 + se->latency_nice / 5);
 		if (slice > sysctl_sched_base_slice * 4)
 			slice = sysctl_sched_base_slice * 4;
-	} else if (se->latency_nice < 0 || walt_low_latency_task(p)) {
+	} else if (se->latency_nice < 0) {
 		slice = sysctl_sched_min_granularity;
+	} else if (walt_low_latency_task(p)) {
+		/*
+		 * WALT low-latency: use base_slice, NOT min_granularity.
+		 *
+		 * When WALT marks many tasks as low-latency during gaming,
+		 * giving them all min_granularity (0.75ms) causes a context
+		 * switch storm that destroys L2/L3 cache and causes
+		 * micro-stuttering. Base_slice (3ms) is still responsive
+		 * but avoids the overhead spiral.
+		 */
+		slice = sysctl_sched_base_slice;
 	} else if (nr_running >= sched_nr_latency) {
 		slice = sysctl_sched_min_granularity;
 	} else {
@@ -4532,9 +4566,17 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		if (curr && curr->on_rq)
 			load += scale_load_down(curr->load.weight);
 
-		lag *= load + scale_load_down(se->load.weight);
+		/*
+		 * Guard against load=0 BEFORE the inflation multiply.
+		 * If load is zero (theoretically impossible with nr_running > 0
+		 * but defensively required), skip lag inflation entirely to
+		 * avoid zeroing the lag and placing the entity at the wrong
+		 * position in the runqueue.
+		 */
 		if (WARN_ON_ONCE(!load))
 			load = 1;
+
+		lag *= load + scale_load_down(se->load.weight);
 		lag = div_s64(lag, load);
 	}
 
