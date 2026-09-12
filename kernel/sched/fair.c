@@ -972,6 +972,7 @@ static __maybe_unused int entity_eligible(struct cfs_rq *cfs_rq, struct sched_en
 	struct sched_entity *curr = cfs_rq->curr;
 	s64 avg = cfs_rq->weighted_vruntime_sum;
 	long load = cfs_rq->load_sum;
+	s64 key, bound;
 
 	/* Include the currently running entity (not in the rb-tree) */
 	if (curr && curr->on_rq) {
@@ -981,7 +982,26 @@ static __maybe_unused int entity_eligible(struct cfs_rq *cfs_rq, struct sched_en
 	}
 
 	/* Cross-multiply to avoid division: avg/load >= entity_key(se) */
-	return avg >= entity_key(cfs_rq, se) * load;
+	key = entity_key(cfs_rq, se);
+
+	/*
+	 * Overflow protection for WALT/PELT-boosted kernels: entity_key * load
+	 * can overflow s64 when load_sum is inflated by weight boosting. Detect
+	 * before the multiplication and use safe fallback.
+	 */
+	if (load > 0 && key != 0) {
+		if (key > 0)
+			bound = S64_MAX / load;
+		else
+			bound = S64_MIN / load;
+
+		if ((key > 0 && key > bound) || (key < 0 && key < bound)) {
+			/* Overflow: use div64 comparison */
+			return div_s64(avg, load) >= key;
+		}
+		return avg >= key * load;
+	}
+	return avg >= 0;
 }
 
 /*
@@ -1037,6 +1057,23 @@ static __maybe_unused s64 avg_vruntime(struct cfs_rq *cfs_rq)
 		if (avg < 0)
 			avg -= (load - 1);
 		avg = div_s64(avg, load);
+
+		/*
+		 * Clamp the weighted average to prevent extreme entity placement.
+		 *
+		 * On systems with WALT/PELT load-boosted entity weights, the
+		 * accumulator can diverge: a small bias in wvr_sum creates a
+		 * large avg offset, which places entities far from min_vruntime,
+		 * which feeds back into wvr_sum (positive feedback loop).
+		 *
+		 * The normal range is ±entity_slice (~3 ms). Clamp generously
+		 * at ±TICK_NSEC * 100 (~400 ms) to prevent divergence while
+		 * allowing legitimate scheduling spread.
+		 */
+		if (avg > (s64)(TICK_NSEC * 100))
+			avg = (s64)(TICK_NSEC * 100);
+		else if (avg < -(s64)(TICK_NSEC * 100))
+			avg = -(s64)(TICK_NSEC * 100);
 	}
 
 	return cfs_rq->min_vruntime + avg;
@@ -4591,10 +4628,19 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH);
 	update_cfs_group(se);
 	enqueue_runnable_load_avg(cfs_rq, se);
+
+	/*
+	 * PLACE the entity after load tracking is updated but BEFORE
+	 * account_entity_enqueue, matching mainline 6.6 ordering.
+	 * Use !curr (not ENQUEUE_WAKEUP) to ensure ALL non-curr entities
+	 * get correct vruntime/deadline placement — including migrations
+	 * and throttle unthrottles which lack ENQUEUE_WAKEUP.
+	 */
+	if (!curr)
+		place_entity(cfs_rq, se, flags);
+
 	account_entity_enqueue(cfs_rq, se);
 
-	if (flags & ENQUEUE_WAKEUP)
-		place_entity(cfs_rq, se, flags);
 	/* Entity has migrated, no longer consider this task hot */
 	if (flags & ENQUEUE_MIGRATED)
 		se->exec_start = 0;
