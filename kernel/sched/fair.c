@@ -8025,11 +8025,10 @@ wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)
 
 static void set_next_buddy(struct sched_entity *se)
 {
-	if (entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se))))
-		return;
-
 	for_each_sched_entity(se) {
 		if (SCHED_WARN_ON(!se->on_rq))
+			return;
+		if (entity_is_task(se) && task_has_idle_policy(task_of(se)))
 			return;
 		cfs_rq_of(se)->next = se;
 	}
@@ -12112,8 +12111,8 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
  */
 static void task_fork_fair(struct task_struct *p)
 {
-	struct cfs_rq *cfs_rq;
 	struct sched_entity *se = &p->se, *curr;
+	struct cfs_rq *cfs_rq;
 	struct rq *rq = this_rq();
 	struct rq_flags rf;
 
@@ -12122,22 +12121,9 @@ static void task_fork_fair(struct task_struct *p)
 
 	cfs_rq = task_cfs_rq(current);
 	curr = cfs_rq->curr;
-	if (curr) {
+	if (curr)
 		update_curr(cfs_rq);
-		se->vruntime = curr->vruntime;
-	}
 	place_entity(cfs_rq, se, 1);
-
-	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-		/*
-		 * Upon rescheduling, sched_class::put_prev_task() will place
-		 * 'current' within the tree based on its new key value.
-		 */
-		swap(curr->vruntime, se->vruntime);
-		resched_curr(rq);
-	}
-
-	se->vruntime -= cfs_rq->min_vruntime;
 	rq_unlock(rq, &rf);
 }
 
