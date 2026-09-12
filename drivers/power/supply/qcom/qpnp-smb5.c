@@ -1385,7 +1385,7 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 				SMB5_QG_TIME_TO_FULL_NOW, &pval->intval);
 		break;
 	default:
-		pr_err("batt power supply prop %d not supported\n", psp);
+		pr_debug("batt power supply prop %d not supported\n", psp);
 		return -EINVAL;
 	}
 
