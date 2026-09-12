@@ -8043,13 +8043,14 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	struct sched_entity *se = &curr->se, *pse = &p->se;
 	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
 	int next_buddy_marked = 0;
+	int cse_is_idle, pse_is_idle;
 
 	if (unlikely(se == pse))
 		return;
 
 	/*
 	 * This is possible from callers such as attach_tasks(), in which we
-	 * unconditionally check_prempt_curr() after an enqueue (which may have
+	 * unconditionally check_preempt_curr() after an enqueue (which may have
 	 * lead to a throttle).  This both saves work and prevents false
 	 * next-buddy nomination below.
 	 */
@@ -8067,10 +8068,17 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	 *
 	 * Note: this also catches the edge-case of curr being in a throttled
 	 * group (e.g. via set_curr_task), since update_curr() (in the
-	 * enqueue of curr) will have resulted in resched being set.
+	 * enqueue of curr) will have resulted in resched being set.  This
+	 * prevents us from potentially nominating it as a false LAST_BUDDY
+	 * below.
 	 */
 	if (test_tsk_need_resched(curr))
 		return;
+
+	/* Idle tasks are by definition preempted by non-idle tasks. */
+	if (unlikely(task_has_idle_policy(curr)) &&
+	    likely(!task_has_idle_policy(p)))
+		goto preempt;
 
 	/*
 	 * Batch and idle tasks do not preempt non-idle tasks (their preemption
@@ -8080,43 +8088,30 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 		return;
 
 	find_matching_se(&se, &pse);
-	update_curr(cfs_rq_of(se));
 	WARN_ON_ONCE(!pse);
+
+	cse_is_idle = entity_is_task(se) && task_has_idle_policy(task_of(se));
+	pse_is_idle = entity_is_task(pse) && task_has_idle_policy(task_of(pse));
 
 	/*
 	 * Preempt an idle group in favor of a non-idle group (and don't preempt
 	 * in the inverse case).
 	 */
-	if (entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se))) &&
-	    entity_is_task(pse) && likely(!task_has_idle_policy(task_of(pse))))
+	if (cse_is_idle && !pse_is_idle)
 		goto preempt;
-	if ((entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se)))) !=
-	    (entity_is_task(pse) && unlikely(task_has_idle_policy(task_of(pse)))))
+	if (cse_is_idle != pse_is_idle)
 		return;
 
-	/*
-	 * EEVDF preemption: if the woken entity is the one that
-	 * pick_eevdf() would select on the current runqueue,
-	 * it should preempt immediately.
-	 */
-	if (pick_eevdf(cfs_rq_of(se)) == pse)
+	cfs_rq = cfs_rq_of(se);
+	update_curr(cfs_rq);
+
+	if (pick_eevdf(cfs_rq) == pse)
 		goto preempt;
 
 	return;
 
 preempt:
 	resched_curr(rq);
-	/*
-	 * Only set the backward buddy when the current task is still
-	 * on the rq. This can happen when a wakeup gets interleaved
-	 * with schedule on the ->pre_schedule() or idle_balance()
-	 * point, either of which can * drop the rq lock.
-	 *
-	 * Also, during early boot the idle thread is in the fair class,
-	 * for obvious reasons its a bad idea to schedule back to it.
-	 */
-	if (unlikely(!se->on_rq || curr == rq->idle))
-		return;
 }
 
 static struct task_struct *
